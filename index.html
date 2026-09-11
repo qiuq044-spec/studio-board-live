@@ -5838,6 +5838,33 @@ input:focus,textarea:focus,select:focus,input[type=number]:focus,input[type=date
 }
 </style>
 
+
+<style id="studio-auth-ui-stage-style">
+/* 登录/注册与密码入口：只新增界面，不改现有视觉体系。 */
+.account-auth-tabs{display:flex;gap:8px;margin:2px 0 18px;padding:4px;border-radius:18px;background:rgba(218,214,207,.45);box-shadow:inset 3px 3px 7px rgba(170,163,154,.16),inset -3px -3px 7px rgba(255,255,255,.58);}
+.account-auth-tab{flex:1;height:38px;border:0;border-radius:14px;background:transparent;color:var(--text-secondary);font:inherit;font-size:12px;font-weight:520;cursor:pointer;transition:.16s ease;}
+.account-auth-tab.active{color:var(--text-primary);background:rgba(229,226,220,.88);box-shadow:4px 4px 9px rgba(170,163,154,.18),-4px -4px 9px rgba(255,255,255,.68);}
+.account-auth-panel[hidden]{display:none!important;}
+.account-auth-hint{margin:-2px 0 14px;font-size:10.5px;line-height:1.65;color:var(--text-tertiary);}
+.account-password-wrap{position:relative;}
+.account-password-wrap input{
+  width:100%;box-sizing:border-box;font-family:inherit;font-size:12.5px;color:var(--text-primary);
+  border:1px solid rgba(255,255,255,.44);border-radius:15px;background:var(--neo-bg);
+  padding:10px 58px 10px 12px;outline:none;box-shadow:var(--neo-shadow-inset-sm);
+  transition:border-color .12s ease,box-shadow .12s ease;
+}
+.account-password-wrap input::placeholder{color:#A4A8AB;}
+.account-password-wrap input:focus{border-color:rgba(82,87,91,.14);box-shadow:var(--neo-shadow-inset-sm),0 0 0 2px rgba(255,255,255,.36);}
+.account-login-modal .account-password-wrap input{height:46px;border-radius:18px;padding:0 58px 0 16px;font-size:13px;}
+.account-password-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);border:0;background:transparent;color:var(--text-secondary);font:inherit;font-size:10.5px;cursor:pointer;padding:4px 6px;}
+.person-create-credential-row{align-items:flex-start;}
+.person-create-credential-row .field{min-width:0;}
+.person-create-credential-row .account-password-wrap{width:100%;}
+.profile-password-action{display:inline-flex;align-items:center;justify-content:center;margin-top:9px;padding:0;border:0;background:transparent;color:var(--text-secondary);font:inherit;font-size:10.8px;font-weight:520;cursor:pointer;}
+.profile-password-action:hover{color:var(--text-primary);}
+.password-change-modal .field:last-of-type{margin-bottom:0;}
+</style>
+
 </head>
 <body>
 <div id="app"></div>
@@ -6008,234 +6035,51 @@ function seedData(){
 
 const LEGACY_LOCAL_DATA_FALLBACK_KEY = 'studio-data-local-fallback-v1';
 const STUDIO_SUPABASE_URL = 'https://evdmnftatdtoacfezltb.supabase.co';
-const STUDIO_SYNC_FUNCTION = 'studio-launch-id-sync-v2';
-const WORKSPACE_LOCAL_PREFIX = 'studio-workspace-local-v2:';
+const STUDIO_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_l8k7IRUkmZaJ_SL5SAPFSg_XkIw0z5W';
+const STUDIO_SYNC_FUNCTION = 'studio-auth-sync-v3';
+const WORKSPACE_LOCAL_PREFIX = 'studio-workspace-local-v3:';
 const IDENTITY_LOCAL_KEY = 'studio-current-identity';
-const ID_WORKSPACE_LOCAL_PREFIX = 'studio-id-workspace-v2:';
-
+const AUTH_SESSION_LOCAL_KEY = 'studio-supabase-auth-v3';
 function normalizeAccountId(id){ return String(id || '').trim().toLowerCase(); }
 function workspaceLocalKey(workspaceId){ return `${WORKSPACE_LOCAL_PREFIX}${workspaceId}`; }
-function identityWorkspaceKey(id){ return `${ID_WORKSPACE_LOCAL_PREFIX}${normalizeAccountId(id)}`; }
+function readLocalWorkspace(workspaceId){try{const raw=localStorage.getItem(workspaceLocalKey(workspaceId));if(!raw)return null;const parsed=JSON.parse(raw);return parsed&&parsed.data?parsed.data:parsed;}catch(e){return null;}}
+function writeLocalWorkspaceJson(workspaceId,dataJson){try{localStorage.setItem(workspaceLocalKey(workspaceId),`{"savedAt":${Date.now()},"data":${dataJson}}`);return true;}catch(e){return false;}}
+function writeLocalWorkspace(workspaceId,data){try{return writeLocalWorkspaceJson(workspaceId,JSON.stringify(data));}catch(e){return false;}}
+let studioAuthSession=null;
+function loadStoredAuthSession(){try{const raw=localStorage.getItem(AUTH_SESSION_LOCAL_KEY);studioAuthSession=raw?JSON.parse(raw):null;}catch(e){studioAuthSession=null;}return studioAuthSession;}
+function persistAuthSession(session){studioAuthSession=session||null;try{if(studioAuthSession)localStorage.setItem(AUTH_SESSION_LOCAL_KEY,JSON.stringify(studioAuthSession));else localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);}catch(e){}}
+async function studioAuthRefresh(){if(!studioAuthSession?.refresh_token)throw new Error('登录已过期，请重新登录');const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({refresh_token:studioAuthSession.refresh_token}),cache:'no-store'});const data=await res.json().catch(()=>({}));if(!res.ok||!data?.access_token){persistAuthSession(null);throw new Error(data?.error_description||data?.msg||'登录已过期，请重新登录');}persistAuthSession({access_token:data.access_token,refresh_token:data.refresh_token||studioAuthSession.refresh_token,expires_at:Date.now()+Math.max(60,Number(data.expires_in)||3600)*1000,user_id:data.user?.id||studioAuthSession.user_id||null});return studioAuthSession;}
+async function ensureStudioAuthSession(){if(!studioAuthSession)loadStoredAuthSession();if(!studioAuthSession?.access_token)throw new Error('请先登录');if(studioAuthSession.expires_at&&Date.now()>studioAuthSession.expires_at-30000)await studioAuthRefresh();return studioAuthSession;}
+async function studioCloud(action,payload={},options={}){const needsAuth=options.auth!==false;if(needsAuth)await ensureStudioAuthSession();const request=async()=>{const headers={'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY};if(needsAuth&&studioAuthSession?.access_token)headers.Authorization=`Bearer ${studioAuthSession.access_token}`;return fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`,{method:'POST',headers,cache:'no-store',body:JSON.stringify({action,...payload})});};let res=await request();if(needsAuth&&res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}const data=await res.json().catch(()=>({}));if(!res.ok||data?.error)throw new Error(data?.error||`云端请求失败（${res.status}）`);return data;}
+async function studioLoginByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const resolved=await studioCloud('resolve_login',{loginId:id},{auth:false});const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('ID 或密码错误');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});return await studioCloud('session');}
+async function studioRegisterByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const created=await studioCloud('register',{loginId:id,password},{auth:false});const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:created.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('注册成功，但自动登录失败，请重新登录');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});const info=await studioCloud('session');return {...info,joinedTeam:!!created.joinedTeam,workspaceType:created.workspaceType};}
+async function studioRestoreSession(){loadStoredAuthSession();if(!studioAuthSession?.access_token)return null;try{return await studioCloud('session');}catch(e){persistAuthSession(null);return null;}}
+async function studioAuthSignOut(){try{if(studioAuthSession?.access_token)await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/logout?scope=local`,{method:'POST',headers:{'apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`}});}catch(e){}persistAuthSession(null);}
+async function studioChangePassword(currentPassword,newPassword){if(!identity)throw new Error('请先登录');const resolved=await studioCloud('resolve_login',{loginId:identity},{auth:false});const verify=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password:currentPassword}),cache:'no-store'});const verified=await verify.json().catch(()=>({}));if(!verify.ok||!verified?.access_token)throw new Error('当前密码不正确');persistAuthSession({access_token:verified.access_token,refresh_token:verified.refresh_token,expires_at:Date.now()+Math.max(60,Number(verified.expires_in)||3600)*1000,user_id:verified.user?.id||null});const update=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/user`,{method:'PUT',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`},body:JSON.stringify({password:newPassword}),cache:'no-store'});const updated=await update.json().catch(()=>({}));if(!update.ok||updated?.error)throw new Error(updated?.msg||updated?.error_description||updated?.error||'修改密码失败');await studioCloud('mark_password_changed');return true;}
+let studioPendingSave=null,studioSaveTimer=null,studioSaveInFlight=false,studioSaveRetryTimer=null;
+function studioQueueWorkspaceSave(workspaceId,data){let dataJson;try{dataJson=JSON.stringify(data);}catch(e){console.error('序列化工作区失败',e);return false;}const localSaved=writeLocalWorkspaceJson(workspaceId,dataJson);studioPendingSave={workspaceId,dataJson};clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},60);return localSaved;}
+async function studioFlushWorkspaceSave(){if(studioSaveInFlight||!studioPendingSave)return;const job=studioPendingSave;studioPendingSave=null;studioSaveInFlight=true;if(studioSaveRetryTimer){clearTimeout(studioSaveRetryTimer);studioSaveRetryTimer=null;}try{await studioCloud('save',{workspaceId:job.workspaceId,data:JSON.parse(job.dataJson)});}catch(e){console.error('云端同步失败，将自动重试',e);if(!studioPendingSave)studioPendingSave=job;studioSaveRetryTimer=setTimeout(()=>{studioSaveRetryTimer=null;studioFlushWorkspaceSave();},1200);}finally{studioSaveInFlight=false;if(studioPendingSave&&!studioSaveRetryTimer){clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},40);}}}
+async function studioFlushBeforeSwitch(){clearTimeout(studioSaveTimer);studioSaveTimer=null;const deadline=Date.now()+5000;while((studioPendingSave||studioSaveInFlight)&&Date.now()<deadline){if(!studioSaveInFlight&&studioPendingSave)await studioFlushWorkspaceSave();if(studioSaveInFlight)await new Promise(r=>setTimeout(r,40));}}
+async function loadAccountRegistry(){return {};}
+async function saveAccountRegistry(){return true;}
+async function readLegacyData(){return null;}
+async function migrateLegacyWorkspaceForId(){return null;}
+async function resolveWorkspaceForId(){return currentWorkspaceId;}
+async function loadWorkspaceData(workspaceId){if(!workspaceId)return null;try{const cloud=await studioCloud('load');if(cloud?.data){writeLocalWorkspace(workspaceId,cloud.data);return cloud.data;}}catch(e){console.warn('云端读取失败，使用本地缓存',e);}return readLocalWorkspace(workspaceId);}
+async function saveWorkspaceData(workspaceId,data){if(!workspaceId||!data)return false;return studioQueueWorkspaceSave(workspaceId,data);}
+async function inviteMemberToWorkspace(id,isAdmin,person,projectIds){return await studioCloud('invite_member',{loginId:normalizeAccountId(id),isAdmin:!!isAdmin,person,projectIds:[...projectIds]});}
+async function createMemberAccount(id,password,isAdmin,person,projectIds){return await inviteMemberToWorkspace(id,isAdmin,person,projectIds||[]);}
+async function attachAccountIdToWorkspace(id,workspaceId,password,isAdmin,person,projectIds){return await inviteMemberToWorkspace(id,isAdmin,person,projectIds||[]);}
+async function detachAccountIdToBlankWorkspace(id){return await studioCloud('delete_member_account',{loginId:normalizeAccountId(id)});}
+async function renameAccountIdInRegistry(oldId,newId){return await studioCloud('rename_member_account',{oldLoginId:normalizeAccountId(oldId),newLoginId:normalizeAccountId(newId)});}
+async function loadData(){return currentWorkspaceId?await loadWorkspaceData(currentWorkspaceId):null;}
+async function saveData(){if(!state||!currentWorkspaceId)return false;const ok=await saveWorkspaceData(currentWorkspaceId,state);if(!ok){showToast('本地保存失败，请检查浏览器存储空间');return false;}return true;}
+async function loadIdentity(){try{return localStorage.getItem(IDENTITY_LOCAL_KEY)||null;}catch(e){return null;}}
+async function saveIdentity(id){identity=normalizeAccountId(id)||null;try{if(identity)localStorage.setItem(IDENTITY_LOCAL_KEY,identity);else localStorage.removeItem(IDENTITY_LOCAL_KEY);}catch(e){}return true;}
+async function loadReadIds(){if(!identity)return [];const key=`read-notifications:${normalizeAccountId(identity)}`;try{const res=await studioCloud('get_user_state',{key:'read-notifications'});if(Array.isArray(res?.value)){localStorage.setItem(key,JSON.stringify(res.value));return res.value;}}catch(e){console.warn('读取通知状态失败',e);}try{const local=localStorage.getItem(key);return local?JSON.parse(local):[];}catch(e){return [];}}
+async function saveReadIds(){if(!identity)return;const key=`read-notifications:${normalizeAccountId(identity)}`;try{localStorage.setItem(key,JSON.stringify(readIds));}catch(e){}studioCloud('set_user_state',{key:'read-notifications',value:readIds}).catch(e=>console.warn('保存通知状态失败',e));}
 
-function createBlankWorkspaceData(id){
-  const cleanId = String(id || '').trim();
-  return {
-    personnel:[{
-      id:cleanId,
-      name:cleanId,
-      position:'',
-      contact:'',
-      status:'',
-      signature:'',
-      tags:[],
-      avatar:'',
-      isAdmin:true
-    }],
-    projects:[],
-    toolCategories:[],
-    strategicGoals:[],
-    strategicGoalArchives:[],
-    tools:[],
-    notifications:[],
-    collaborations:[],
-  };
-}
-
-function readLocalWorkspace(workspaceId){
-  try{
-    const raw = localStorage.getItem(workspaceLocalKey(workspaceId));
-    if(!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && parsed.data ? parsed.data : parsed;
-  }catch(e){ return null; }
-}
-function writeLocalWorkspaceJson(workspaceId, dataJson){
-  try{
-    localStorage.setItem(workspaceLocalKey(workspaceId), `{"savedAt":${Date.now()},"data":${dataJson}}`);
-    return true;
-  }catch(e){ return false; }
-}
-function writeLocalWorkspace(workspaceId, data){
-  try{ return writeLocalWorkspaceJson(workspaceId, JSON.stringify(data)); }
-  catch(e){ return false; }
-}
-
-async function studioCloud(action, payload={}){
-  const res = await fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`, {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    cache:'no-store',
-    body:JSON.stringify({action, ...payload})
-  });
-  const data = await res.json().catch(()=>({}));
-  if(!res.ok || data?.error) throw new Error(data?.error || `云端请求失败（${res.status}）`);
-  return data;
-}
-
-// 保存采用“本地立即成功 + 后台合并同步”：UI 不再等待网络往返。
-let studioPendingSave = null;
-let studioSaveTimer = null;
-let studioSaveInFlight = false;
-let studioSaveRetryTimer = null;
-let studioPreviousIdentity = null;
-
-function studioQueueWorkspaceSave(workspaceId, data){
-  let dataJson;
-  try{ dataJson = JSON.stringify(data); }
-  catch(e){ console.error('序列化工作区失败', e); return false; }
-
-  const localSaved = writeLocalWorkspaceJson(workspaceId, dataJson);
-  studioPendingSave = {
-    workspaceId,
-    dataJson,
-    identity: normalizeAccountId(identity),
-    previousIdentity: normalizeAccountId(studioPreviousIdentity)
-  };
-  clearTimeout(studioSaveTimer);
-  studioSaveTimer = setTimeout(()=>{ studioFlushWorkspaceSave(); }, 70);
-  return localSaved;
-}
-
-async function studioFlushWorkspaceSave(){
-  if(studioSaveInFlight || !studioPendingSave) return;
-  const job = studioPendingSave;
-  studioPendingSave = null;
-  studioSaveInFlight = true;
-  clearTimeout(studioSaveRetryTimer);
-  try{
-    const body = `{"action":"save","identity":${JSON.stringify(job.identity)},"previousIdentity":${JSON.stringify(job.previousIdentity)},"workspaceId":${JSON.stringify(job.workspaceId)},"data":${job.dataJson}}`;
-    const res = await fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`, {
-      method:'POST', headers:{'Content-Type':'application/json'}, cache:'no-store', body
-    });
-    const result = await res.json().catch(()=>({}));
-    if(!res.ok || result?.error) throw new Error(result?.error || `云端请求失败（${res.status}）`);
-    if(job.previousIdentity && normalizeAccountId(studioPreviousIdentity)===job.previousIdentity){
-      studioPreviousIdentity = null;
-    }
-  }catch(e){
-    console.error('云端同步失败，将自动重试', e);
-    // 保留更新更晚的 pending；只有没有新版本时才把失败版本放回队列。
-    if(!studioPendingSave) studioPendingSave = job;
-    studioSaveRetryTimer = setTimeout(()=>{ studioFlushWorkspaceSave(); }, 1400);
-  }finally{
-    studioSaveInFlight = false;
-    if(studioPendingSave && !studioSaveRetryTimer){
-      studioSaveTimer = setTimeout(()=>{ studioFlushWorkspaceSave(); }, 40);
-    }
-  }
-}
-
-async function studioFlushBeforeSwitch(){
-  clearTimeout(studioSaveTimer);
-  const deadline = Date.now() + 5000;
-  while((studioPendingSave || studioSaveInFlight) && Date.now() < deadline){
-    if(!studioSaveInFlight && studioPendingSave) await studioFlushWorkspaceSave();
-    if(studioSaveInFlight) await new Promise(r=>setTimeout(r,40));
-  }
-}
-
-// 旧 registry 接口保留为兼容壳；真实 ID -> 工作区关系由 Supabase v2 索引维护。
-async function loadAccountRegistry(){ return {}; }
-async function saveAccountRegistry(){ return true; }
-async function readLegacyData(){ return null; }
-async function migrateLegacyWorkspaceForId(){ return null; }
-
-async function resolveWorkspaceForId(id, createIfMissing=true){
-  const normalized = normalizeAccountId(id);
-  if(!normalized) return null;
-  try{
-    const cloud = await studioCloud('bootstrap', {identity:normalized, createIfMissing});
-    if(!cloud?.workspaceId) return null;
-    currentWorkspaceId = cloud.workspaceId;
-    try{ localStorage.setItem(identityWorkspaceKey(normalized), currentWorkspaceId); }catch(e){}
-    if(cloud.data) writeLocalWorkspace(currentWorkspaceId, cloud.data);
-    return currentWorkspaceId;
-  }catch(e){
-    console.warn('云端登录失败，尝试本地缓存', e);
-    try{ return localStorage.getItem(identityWorkspaceKey(normalized)) || null; }
-    catch(_){ return null; }
-  }
-}
-
-async function loadWorkspaceData(workspaceId){
-  if(!workspaceId) return null;
-  const local = readLocalWorkspace(workspaceId);
-  if(local) return local;
-  const id = normalizeAccountId(identity);
-  if(!id) return null;
-  try{
-    const cloud = await studioCloud('load', {identity:id, workspaceId});
-    if(cloud?.data){ writeLocalWorkspace(workspaceId, cloud.data); return cloud.data; }
-  }catch(e){ console.warn('云端读取失败', e); }
-  return null;
-}
-
-async function saveWorkspaceData(workspaceId, data){
-  if(!workspaceId || !data) return false;
-  // 立即返回，不让按钮等待 Supabase 网络。
-  return studioQueueWorkspaceSave(workspaceId, data);
-}
-
-async function attachAccountIdToWorkspace(){ return true; }
-async function detachAccountIdToBlankWorkspace(){ return true; }
-async function renameAccountIdInRegistry(oldId, newId){
-  if(normalizeAccountId(oldId)===normalizeAccountId(identity)) studioPreviousIdentity = normalizeAccountId(oldId);
-  return true;
-}
-
-async function loadData(){
-  if(!currentWorkspaceId) return null;
-  return await loadWorkspaceData(currentWorkspaceId);
-}
-async function saveData(){
-  if(!state || !currentWorkspaceId) return false;
-  const ok = await saveWorkspaceData(currentWorkspaceId, state);
-  if(!ok){ showToast('本地保存失败，请检查浏览器存储空间'); return false; }
-  return true;
-}
-async function loadIdentity(){
-  try{ return localStorage.getItem(IDENTITY_LOCAL_KEY) || null; }
-  catch(e){ return null; }
-}
-async function saveIdentity(id){
-  const oldIdentity = normalizeAccountId(identity);
-  const nextIdentity = normalizeAccountId(id) || null;
-  if(oldIdentity && nextIdentity && oldIdentity!==nextIdentity && !studioPreviousIdentity){
-    studioPreviousIdentity = oldIdentity;
-  }
-  identity = nextIdentity;
-  try{
-    if(identity) localStorage.setItem(IDENTITY_LOCAL_KEY, identity);
-    else localStorage.removeItem(IDENTITY_LOCAL_KEY);
-  }catch(e){}
-  return true;
-}
-async function loadReadIds(){
-  if(!identity) return [];
-  const key = `read-notifications:${normalizeAccountId(identity)}`;
-  try{
-    const local = localStorage.getItem(key);
-    if(local) return JSON.parse(local);
-  }catch(e){}
-  try{
-    const res = await studioCloud('get_user_state',{identity:normalizeAccountId(identity),key:'read-notifications'});
-    if(Array.isArray(res?.value)){
-      try{ localStorage.setItem(key, JSON.stringify(res.value)); }catch(e){}
-      return res.value;
-    }
-  }catch(e){ console.warn('读取通知状态失败',e); }
-  return [];
-}
-async function saveReadIds(){
-  if(!identity) return;
-  const id = normalizeAccountId(identity);
-  const key = `read-notifications:${id}`;
-  try{ localStorage.setItem(key, JSON.stringify(readIds)); }catch(e){}
-  // 通知已读状态也后台同步，不阻塞关闭公告等操作。
-  studioCloud('set_user_state',{identity:id,key:'read-notifications',value:readIds}).catch(e=>console.warn('保存通知状态失败',e));
-}
-
-function getPersonnel(id){ return state.personnel.find(p=>p.id===id); }
+function getPersonnel(id){ const target=normalizeAccountId(id); return state.personnel.find(p=>normalizeAccountId(p.id)===target); }
 function isCurrentAdmin(){
   const p = getPersonnel(identity);
   return !!(p && p.isAdmin);
@@ -6968,36 +6812,13 @@ function toolHost(url){
 
 /* ============ 初始化 ============ */
 async function init(){
-  accountRegistry = await loadAccountRegistry();
-  identity = await loadIdentity();
-
-  if(!identity){
-    // 未登录时不渲染任何业务页面，避免登录页背后泄露团队信息。
-    document.getElementById('app').innerHTML = '';
-    state = null;
-    readIds = [];
-    openAccountLoginModal({force:true});
-    return;
-  }
-
-  currentWorkspaceId = await resolveWorkspaceForId(identity, true);
-  state = await loadWorkspaceData(currentWorkspaceId);
-  if(!state){
-    state = createBlankWorkspaceData(identity);
-    await saveWorkspaceData(currentWorkspaceId, state);
-  }
-  ensureToolData();
-  ensureApplicationsData();
-  ensurePersonnelData();
-  ensureStrategicGoalsData();
-  ensureStrategicArchiveData();
-  await autoArchiveDueStrategicGoals();
-  readIds = await loadReadIds();
-  renderApp();
-  if(currentPage==='notify') await markTeamAnnouncementsRead();
-  startCarousel();
-  startStrategicArchiveTimer();
-  syncAnnounceWidget(true);
+  accountRegistry=await loadAccountRegistry();
+  const sessionInfo=await studioRestoreSession();
+  if(!sessionInfo){identity=null;currentWorkspaceId=null;state=null;readIds=[];document.getElementById('app').innerHTML='';openAccountLoginModal({force:true});return;}
+  currentWorkspaceId=sessionInfo.workspaceId;state=sessionInfo.data;await saveIdentity(sessionInfo.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);
+  ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();
+  readIds=await loadReadIds();renderApp();if(currentPage==='notify')await markTeamAnnouncementsRead();startCarousel();startStrategicArchiveTimer();syncAnnounceWidget(true);
+  if(sessionInfo.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);
 }
 
 /* ============ 群公告悬浮对话框 ============ */
@@ -7159,79 +6980,46 @@ function findPersonnelByLoginId(rawId){
 }
 
 function openAccountLoginModal({force=false, switchMode=false}={}){
-  const root = document.getElementById('modalRoot');
-  if(!root) return;
-  root.innerHTML = `
+  const root=document.getElementById('modalRoot');if(!root)return;
+  root.innerHTML=`
     <div class="account-auth-screen" id="accountLoginMask">
       <div class="modal account-login-modal">
-        <div class="modal-title">注册 / 登录</div>
-        <div class="account-login-form">
-          <div class="field">
-            <label class="field-label">ID</label>
-            <input type="text" id="accountLoginId" autocomplete="username" placeholder="输入 ID">
+        <div class="modal-title">账号</div>
+        <div class="account-auth-tabs" role="tablist" aria-label="登录或注册">
+          <button type="button" class="account-auth-tab active" id="accountAuthLoginTab">登录</button>
+          <button type="button" class="account-auth-tab" id="accountAuthRegisterTab">注册</button>
+        </div>
+        <div class="account-auth-panel" id="accountLoginPanel">
+          <div class="account-login-form">
+            <div class="field"><label class="field-label">ID</label><input type="text" id="accountLoginId" autocomplete="username" placeholder="输入 ID"></div>
+            <div class="field"><label class="field-label">密码</label><div class="account-password-wrap"><input type="password" id="accountLoginPassword" autocomplete="current-password" placeholder="输入密码"><button type="button" class="account-password-toggle" data-password-toggle="accountLoginPassword">显示</button></div></div>
+            <div class="account-auth-hint">已有账号直接登录。</div>
+            <div class="account-login-error" id="accountLoginError"></div>
+            <div class="account-login-actions">${(!force&&switchMode)?`<button class="btn" id="cancelAccountLogin">取消</button>`:''}<button class="btn btn-primary" id="confirmAccountLogin">登录</button></div>
           </div>
-          <div class="account-login-error" id="accountLoginError"></div>
-          <div class="account-login-actions">
-            ${(!force && switchMode) ? `<button class="btn" id="cancelAccountLogin">取消</button>` : ''}
-            <button class="btn btn-primary" id="confirmAccountLogin">进入</button>
+        </div>
+        <div class="account-auth-panel" id="accountRegisterPanel" hidden>
+          <div class="account-login-form">
+            <div class="field"><label class="field-label">ID</label><input type="text" id="accountRegisterId" autocomplete="username" placeholder="设置 ID"></div>
+            <div class="field"><label class="field-label">密码</label><div class="account-password-wrap"><input type="password" id="accountRegisterPassword" autocomplete="new-password" placeholder="至少 6 位"><button type="button" class="account-password-toggle" data-password-toggle="accountRegisterPassword">显示</button></div></div>
+            <div class="field"><label class="field-label">确认密码</label><div class="account-password-wrap"><input type="password" id="accountRegisterPasswordConfirm" autocomplete="new-password" placeholder="再次输入密码"><button type="button" class="account-password-toggle" data-password-toggle="accountRegisterPasswordConfirm">显示</button></div></div>
+            <div class="account-auth-hint">没有团队邀请时会创建个人账号；已有团队邀请会自动加入对应团队。</div>
+            <div class="account-login-error" id="accountRegisterError"></div>
+            <div class="account-login-actions">${(!force&&switchMode)?`<button class="btn" id="cancelAccountRegister">取消</button>`:''}<button class="btn btn-primary" id="confirmAccountRegister">注册</button></div>
           </div>
         </div>
       </div>
     </div>`;
-
-  const input = document.getElementById('accountLoginId');
-  const error = document.getElementById('accountLoginError');
-  const submit = async ()=>{
-    const id = (input?.value || '').trim();
-    if(!id){
-      if(error) error.textContent = '请输入 ID';
-      input?.focus();
-      return;
-    }
-
-    // 切换账号前确保当前工作区最后一次修改已经排队，并尽量完成云端同步。
-    if(state && currentWorkspaceId){ await saveData(); await studioFlushBeforeSwitch(); }
-
-    const workspaceId = await resolveWorkspaceForId(id, true);
-    let nextState = await loadWorkspaceData(workspaceId);
-    if(!nextState){
-      nextState = createBlankWorkspaceData(id);
-      await saveWorkspaceData(workspaceId, nextState);
-    }
-
-    currentWorkspaceId = workspaceId;
-    state = nextState;
-    ensureToolData();
-    ensureApplicationsData();
-    ensurePersonnelData();
-    ensureStrategicGoalsData();
-    ensureStrategicArchiveData();
-    await autoArchiveDueStrategicGoals();
-
-    // 如果这是一个新注册的独立 ID，它会拥有一个全新的空工作区；
-    // 已经被团队管理员添加过的 ID，则通过 registry 自动进入对应团队工作区。
-    const person = findPersonnelByLoginId(id);
-    const loginId = person?.id || id;
-    await saveIdentity(loginId);
-    readIds = await loadReadIds();
-    root.innerHTML = '';
-    currentPage = 'dashboard';
-    selectedProjectId = null;
-    projectWorkspaceMode = 'projects';
-    renderApp();
-    syncAnnounceWidget(true);
-  };
-
-  document.getElementById('confirmAccountLogin').onclick = submit;
-  const cancel = document.getElementById('cancelAccountLogin');
-  if(cancel) cancel.onclick = ()=>{ root.innerHTML=''; };
-  input?.addEventListener('keydown', e=>{
-    if(e.key==='Enter'){
-      e.preventDefault();
-      submit();
-    }
-  });
-  setTimeout(()=>input?.focus(),0);
+  const loginTab=document.getElementById('accountAuthLoginTab'),registerTab=document.getElementById('accountAuthRegisterTab'),loginPanel=document.getElementById('accountLoginPanel'),registerPanel=document.getElementById('accountRegisterPanel');
+  const setMode=(mode)=>{const isLogin=mode==='login';loginTab.classList.toggle('active',isLogin);registerTab.classList.toggle('active',!isLogin);loginPanel.hidden=!isLogin;registerPanel.hidden=isLogin;setTimeout(()=>document.getElementById(isLogin?'accountLoginId':'accountRegisterId')?.focus(),0);};
+  loginTab.onclick=()=>setMode('login');registerTab.onclick=()=>setMode('register');
+  document.querySelectorAll('#accountLoginMask [data-password-toggle]').forEach(btn=>{btn.onclick=()=>{const input=document.getElementById(btn.dataset.passwordToggle);if(!input)return;input.type=input.type==='password'?'text':'password';btn.textContent=input.type==='password'?'显示':'隐藏';};});
+  const enterWorkspace=async(info)=>{currentWorkspaceId=info.workspaceId;state=info.data;await saveIdentity(info.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();readIds=await loadReadIds();root.innerHTML='';currentPage='dashboard';selectedProjectId=null;projectWorkspaceMode='projects';renderApp();syncAnnounceWidget(true);if(info.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);};
+  const loginSubmit=async()=>{const input=document.getElementById('accountLoginId'),password=document.getElementById('accountLoginPassword'),error=document.getElementById('accountLoginError'),btn=document.getElementById('confirmAccountLogin');const id=(input?.value||'').trim(),pwd=password?.value||'';if(!id){if(error)error.textContent='请输入 ID';input?.focus();return;}if(!pwd){if(error)error.textContent='请输入密码';password?.focus();return;}if(error)error.textContent='';if(btn){btn.disabled=true;btn.textContent='登录中…';}try{if(state&&currentWorkspaceId){await saveData();await studioFlushBeforeSwitch();}const info=await studioLoginByIdPassword(id,pwd);await enterWorkspace(info);}catch(e){if(error)error.textContent=e?.message||'登录失败';if(btn){btn.disabled=false;btn.textContent='登录';}}};
+  const registerSubmit=async()=>{const idInput=document.getElementById('accountRegisterId'),pwdInput=document.getElementById('accountRegisterPassword'),pwd2Input=document.getElementById('accountRegisterPasswordConfirm'),error=document.getElementById('accountRegisterError'),btn=document.getElementById('confirmAccountRegister');const id=(idInput?.value||'').trim(),pwd=pwdInput?.value||'',pwd2=pwd2Input?.value||'';if(!id){if(error)error.textContent='请设置 ID';idInput?.focus();return;}if(pwd.length<6){if(error)error.textContent='密码至少 6 位';pwdInput?.focus();return;}if(pwd!==pwd2){if(error)error.textContent='两次输入的密码不一致';pwd2Input?.focus();return;}if(error)error.textContent='';if(btn){btn.disabled=true;btn.textContent='注册中…';}try{if(state&&currentWorkspaceId){await saveData();await studioFlushBeforeSwitch();}const info=await studioRegisterByIdPassword(id,pwd);await enterWorkspace(info);setTimeout(()=>showToast(info.joinedTeam?'注册成功，已自动加入团队':'注册成功，已创建个人账号'),80);}catch(e){if(error)error.textContent=e?.message||'注册失败';if(btn){btn.disabled=false;btn.textContent='注册';}}};
+  document.getElementById('confirmAccountLogin').onclick=loginSubmit;document.getElementById('confirmAccountRegister').onclick=registerSubmit;
+  const cancelLogin=document.getElementById('cancelAccountLogin'),cancelRegister=document.getElementById('cancelAccountRegister');if(cancelLogin)cancelLogin.onclick=()=>{root.innerHTML='';};if(cancelRegister)cancelRegister.onclick=()=>{root.innerHTML='';};
+  document.getElementById('accountLoginPassword')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();loginSubmit();}});document.getElementById('accountRegisterPasswordConfirm')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();registerSubmit();}});setTimeout(()=>document.getElementById('accountLoginId')?.focus(),0);
 }
 
 function renderApp(){
@@ -7311,7 +7099,8 @@ function renderApp(){
   if(logoutBtn) logoutBtn.addEventListener('click', async (e)=>{
     e.stopPropagation();
     if(identityMenu) identityMenu.classList.remove('open');
-    if(state && currentWorkspaceId) await saveData();
+    if(state && currentWorkspaceId){ await saveData(); await studioFlushBeforeSwitch(); }
+    await studioAuthSignOut();
     await saveIdentity('');
     currentWorkspaceId = null;
     state = null;
@@ -8005,6 +7794,7 @@ function pageProfile(){
           <div class="profile-info-item">
             <div class="profile-info-label">人员 ID</div>
             <div class="profile-info-value mono-id">${escapeHtml(person.id)}</div>
+            <button type="button" class="profile-password-action" id="profileChangePassword">修改密码</button>
           </div>
           <div class="profile-info-item">
             <div class="profile-info-label">岗位</div>
@@ -8019,6 +7809,10 @@ function pageProfile(){
     </div>
   `;
 }
+function openProfilePasswordModal({force=false}={}){
+  openModal(force?'首次登录，请修改密码':'修改密码',`<div class="password-change-modal"><div class="field"><label class="field-label">当前密码</label><div class="account-password-wrap"><input type="password" id="profileCurrentPassword" autocomplete="current-password" placeholder="输入当前密码"><button type="button" class="account-password-toggle" data-password-toggle="profileCurrentPassword">显示</button></div></div><div class="field"><label class="field-label">新密码</label><div class="account-password-wrap"><input type="password" id="profileNewPassword" autocomplete="new-password" placeholder="至少 6 位"><button type="button" class="account-password-toggle" data-password-toggle="profileNewPassword">显示</button></div></div><div class="field"><label class="field-label">确认新密码</label><div class="account-password-wrap"><input type="password" id="profileNewPasswordConfirm" autocomplete="new-password" placeholder="再次输入新密码"><button type="button" class="account-password-toggle" data-password-toggle="profileNewPasswordConfirm">显示</button></div></div><div class="modal-foot">${force?'':`<button class="btn" id="cancelProfilePassword">取消</button>`}<button class="btn btn-primary" id="saveProfilePassword">确认修改</button></div></div>`,()=>{document.querySelectorAll('#modalRoot [data-password-toggle]').forEach(btn=>{btn.onclick=()=>{const input=document.getElementById(btn.dataset.passwordToggle);if(!input)return;input.type=input.type==='password'?'text':'password';btn.textContent=input.type==='password'?'显示':'隐藏';};});if(force){const mask=document.getElementById('modalMask');mask?.addEventListener('click',e=>{if(e.target===mask){e.preventDefault();e.stopImmediatePropagation();}},true);}else{const cancel=document.getElementById('cancelProfilePassword');if(cancel)cancel.onclick=closeModal;}document.getElementById('saveProfilePassword').onclick=async()=>{const current=document.getElementById('profileCurrentPassword')?.value||'',next=document.getElementById('profileNewPassword')?.value||'',next2=document.getElementById('profileNewPasswordConfirm')?.value||'',btn=document.getElementById('saveProfilePassword');if(!current){showToast('请输入当前密码');return;}if(next.length<6){showToast('新密码至少 6 位');return;}if(next!==next2){showToast('两次输入的新密码不一致');return;}btn.disabled=true;btn.textContent='保存中…';try{await studioChangePassword(current,next);closeModal();showToast('密码已修改');}catch(e){showToast(e?.message||'修改密码失败');btn.disabled=false;btn.textContent='确认修改';}};setTimeout(()=>document.getElementById('profileCurrentPassword')?.focus(),30);});
+}
+
 function compressAvatarFile(file){
   return new Promise((resolve,reject)=>{
     if(!file){ reject(new Error('请选择图片文件')); return; }
@@ -8229,9 +8023,9 @@ function openPersonDetailModal(personId){
         const removedId = person.id;
         const removedName = person.name;
 
-        // 删除人员档案。
+        // 先删除认证账号，再删除人员档案，避免账号与人员状态分裂。
+        try{ await detachAccountIdToBlankWorkspace(removedId); }catch(e){ showToast(e?.message || '删除成员账号失败'); return; }
         state.personnel = state.personnel.filter(p=>p.id!==removedId);
-        await detachAccountIdToBlankWorkspace(removedId);
 
         // 级联清理所有项目中的该成员；成员下的阶段目标会随成员一并移除。
         state.projects.forEach(proj=>{
@@ -8372,7 +8166,10 @@ function openAddPersonModal(){
       <div class="field"><label class="field-label">ID</label><input type="text" id="newPersonId" placeholder="输入 ID"></div>
       <div class="field"><label class="field-label">姓名</label><input type="text" id="newPersonName" placeholder="姓名"></div>
     </div>
-    <div class="field"><label class="field-label">岗位</label><input type="text" id="newPersonPosition" placeholder="岗位"></div>
+    <div class="field-row person-create-credential-row">
+      <div class="field"><label class="field-label">岗位</label><input type="text" id="newPersonPosition" placeholder="岗位"></div>
+      <div class="field"><label class="field-label">管理员权限</label><label class="person-admin-control"><input type="checkbox" id="newPersonIsAdmin"><span>设为管理员</span></label></div>
+    </div>
     <div class="field">
       <label class="field-label">项目归属</label>
       <div class="person-project-select" id="newPersonProjectPicker">${personProjectPickerHtml(selectedProjectIds, 'data-new-person-project')}</div>
@@ -8407,55 +8204,10 @@ function openAddPersonModal(){
     bindPersonProjectSelect('newPersonProjectPicker', selectedProjectIds, 'data-new-person-project');
     document.getElementById('cancelNewPerson').onclick = closeModal;
     document.getElementById('confirmNewPerson').onclick = async ()=>{
-      const id = document.getElementById('newPersonId').value.trim();
-      const name = nameInput.value.trim();
-      const position = document.getElementById('newPersonPosition').value.trim();
-      if(!id){ showToast('请输入人员 ID'); return; }
-      if(state.personnel.some(p=>String(p.id).toLowerCase()===id.toLowerCase())){ showToast('这个人员 ID 已存在'); return; }
-      if(!name){ showToast('请输入姓名'); return; }
-      const isFirstMember = state.personnel.length===0;
-      const newPerson = {
-        id,
-        name,
-        position: position || '未设置',
-        contact:'',
-        status:'工作中',
-        signature:'',
-        tags:[],
-        avatar: stagedAvatar,
-        isAdmin:isFirstMember
-      };
-      state.personnel.push(newPerson);
-      await attachAccountIdToWorkspace(id, currentWorkspaceId);
-      if(isFirstMember){
-        // 第一个拉起团队并加入人员管理的成员，自动成为唯一管理员。
-        state.personnel.forEach(p=>{ p.isAdmin = p.id===id; });
-        await saveIdentity(id);
-      }
-      state.notifications.push({
-        id:'n_'+uid(),
-        content:`新人「${name}」已加入团队`,
-        type:'personnel_join',
-        personnelId:id,
-        ts:Date.now()
-      });
-
-      state.projects.filter(proj=>!proj.completed && selectedProjectIds.has(proj.id)).forEach(proj=>{
-        if(!proj.members.some(m=>m.personnelId===id)){
-          proj.members.push({
-            id:'m_'+uid(),
-            personnelId:id,
-            name,
-            role:newPerson.position,
-            goals:[]
-          });
-        }
-      });
-
-      await saveData();
-      closeModal();
-      renderPage();
-      showToast('成员已添加');
+      const id=normalizeAccountId(document.getElementById('newPersonId').value),name=nameInput.value.trim(),position=document.getElementById('newPersonPosition').value.trim(),isAdmin=!!document.getElementById('newPersonIsAdmin')?.checked,confirmBtn=document.getElementById('confirmNewPerson');
+      if(!id){showToast('请输入人员 ID');return;}if(state.personnel.some(p=>String(p.id).toLowerCase()===id.toLowerCase())){showToast('这个人员 ID 已存在');return;}if(!name){showToast('请输入姓名');return;}
+      const newPerson={id,name,position:position||'未设置',contact:'',status:'工作中',signature:'',tags:[],avatar:stagedAvatar,isAdmin};confirmBtn.disabled=true;confirmBtn.textContent='添加中…';
+      try{const cloud=await inviteMemberToWorkspace(id,isAdmin,newPerson,selectedProjectIds);state=cloud.data;writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();closeModal();renderPage();showToast(cloud.status==='joined'?'成员已加入团队':'邀请已保存，对方注册后会自动加入团队');}catch(e){showToast(e?.message||'邀请成员失败');confirmBtn.disabled=false;confirmBtn.textContent='添加';}
     };
     setTimeout(()=>document.getElementById('newPersonId')?.focus(),30);
   });
@@ -9982,6 +9734,8 @@ function bindPageEvents(){
   // ---- 个人信息 ----
   if(currentPage==='profile'){
     const person = getPersonnel(identity);
+    const profileChangePasswordBtn = document.getElementById('profileChangePassword');
+    if(profileChangePasswordBtn) profileChangePasswordBtn.onclick = openProfilePasswordModal;
     if(person){
       const avatarFile = document.getElementById('profileAvatarFile');
       const openAvatarPicker = ()=>avatarFile && avatarFile.click();
@@ -10605,6 +10359,7 @@ init();
   else enhanceAll();
 })();
 </script>
+
 
 </body>
 </html>
