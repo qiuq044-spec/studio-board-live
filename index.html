@@ -5817,84 +5817,25 @@ input:focus,textarea:focus,select:focus,input[type=number]:focus,input[type=date
   }
 </style>
 
-<!-- Supabase deployment layer: added only in deployment copy -->
-<script>
-const STUDIO_SUPABASE_URL='https://evdmnftatdtoacfezltb.supabase.co';
-const STUDIO_SUPABASE_KEY='sb_publishable_l8k7IRUkmZaJ_SL5SAPFSg_XkIw0z5W';
-const STUDIO_SYNC_FUNCTION='studio-launch-sync-v1';
-const STUDIO_SESSION_KEY='studio-supabase-session-v1';
+<style id="team-nav-bold-and-strategic-square-fix">
+/* 仅修复：团队管理左侧四个导航文字加粗。 */
+.hr-workspace.hr-active .hr-subnav-item{
+  font-weight:600!important;
+}
+.hr-workspace.hr-active .hr-subnav-item .hr-label-wrap,
+.hr-workspace.hr-active .hr-subnav-item .hr-label-wrap > span:first-child{
+  font-weight:600!important;
+}
 
-function studioReadSession(){
-  try{return JSON.parse(localStorage.getItem(STUDIO_SESSION_KEY)||'null');}catch(e){return null;}
+/* 仅修复：战略目标任务按钮外层零圆角容器被全局阴影重新命中，造成矩形直角外溢。 */
+#pageRoot .strategic-task-module{
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  overflow:visible!important;
 }
-function studioWriteSession(session){
-  try{if(session)localStorage.setItem(STUDIO_SESSION_KEY,JSON.stringify(session));else localStorage.removeItem(STUDIO_SESSION_KEY);}catch(e){}
-}
-async function studioAuthRequest(path,body){
-  const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/${path}`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_KEY},
-    body:JSON.stringify(body||{})
-  });
-  const data=await res.json().catch(()=>({}));
-  if(!res.ok) throw new Error(data?.msg||data?.message||data?.error_description||data?.error||'认证失败');
-  return data;
-}
-async function studioAuthRefreshIfNeeded(){
-  let session=studioReadSession();
-  if(!session) return null;
-  const now=Math.floor(Date.now()/1000);
-  if(session.expires_at && session.expires_at-now>60) return session;
-  if(!session.refresh_token){studioWriteSession(null);return null;}
-  try{
-    const next=await studioAuthRequest('token?grant_type=refresh_token',{refresh_token:session.refresh_token});
-    next.expires_at=next.expires_at||Math.floor(Date.now()/1000)+(next.expires_in||3600);
-    studioWriteSession(next);return next;
-  }catch(e){studioWriteSession(null);return null;}
-}
-async function studioAuthGetSession(){return await studioAuthRefreshIfNeeded();}
-async function studioAuthSignIn(email,password){
-  const data=await studioAuthRequest('token?grant_type=password',{email,password});
-  data.expires_at=data.expires_at||Math.floor(Date.now()/1000)+(data.expires_in||3600);
-  studioWriteSession(data);return data;
-}
-async function studioAuthSignUp(email,password){
-  const redirectTo=window.location.href.split('#')[0];
-  const data=await studioAuthRequest(`signup?redirect_to=${encodeURIComponent(redirectTo)}`,{email,password});
-  const session=data?.session||((data?.access_token)?data:null);
-  if(session){session.expires_at=session.expires_at||Math.floor(Date.now()/1000)+(session.expires_in||3600);studioWriteSession(session);}
-  return data;
-}
-async function studioAuthSignOut(){
-  const session=studioReadSession();
-  if(session?.access_token){
-    try{await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/logout`,{method:'POST',headers:{'apikey':STUDIO_SUPABASE_KEY,'Authorization':`Bearer ${session.access_token}`}});}catch(e){}
-  }
-  studioWriteSession(null);
-}
-function studioSessionEmail(session){return session?.user?.email||'';}
-async function studioCloud(action,payload={}){
-  const session=await studioAuthGetSession();
-  if(!session?.access_token) throw new Error('请先登录');
-  const res=await fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_KEY,'Authorization':`Bearer ${session.access_token}`},
-    body:JSON.stringify({action,...payload})
-  });
-  const data=await res.json().catch(()=>({}));
-  if(!res.ok||data?.error) throw new Error(data?.error||`云端请求失败（${res.status}）`);
-  return data;
-}
-</script>
-<style id="supabase-auth-style">
-  .account-login-modal input[type=email],
-  .account-login-modal input[type=password]{
-    height:46px;border-radius:18px;padding:0 16px;font-size:13px;width:100%;
-    font-family:inherit;color:var(--text-primary);background:var(--neo-bg);
-    border:1px solid rgba(255,255,255,.44);box-shadow:var(--neo-shadow-inset-sm);outline:none;
-  }
-  .account-login-actions{flex-wrap:wrap;}
-  .account-login-secondary{margin-right:auto;}
 </style>
 
 </head>
@@ -6065,86 +6006,182 @@ function seedData(){
   };
 }
 
-
 const LEGACY_LOCAL_DATA_FALLBACK_KEY = 'studio-data-local-fallback-v1';
-const ACCOUNT_REGISTRY_STORAGE_KEY = 'studio-account-registry-v2';
-const ACCOUNT_REGISTRY_LOCAL_KEY = 'studio-account-registry-local-v2';
-const WORKSPACE_STORAGE_PREFIX = 'studio-workspace-data-v2:';
+const STUDIO_SUPABASE_URL = 'https://evdmnftatdtoacfezltb.supabase.co';
+const STUDIO_SYNC_FUNCTION = 'studio-launch-id-sync-v2';
 const WORKSPACE_LOCAL_PREFIX = 'studio-workspace-local-v2:';
+const IDENTITY_LOCAL_KEY = 'studio-current-identity';
+const ID_WORKSPACE_LOCAL_PREFIX = 'studio-id-workspace-v2:';
 
 function normalizeAccountId(id){ return String(id || '').trim().toLowerCase(); }
-function workspaceStorageKey(workspaceId){ return `${WORKSPACE_STORAGE_PREFIX}${workspaceId}`; }
 function workspaceLocalKey(workspaceId){ return `${WORKSPACE_LOCAL_PREFIX}${workspaceId}`; }
+function identityWorkspaceKey(id){ return `${ID_WORKSPACE_LOCAL_PREFIX}${normalizeAccountId(id)}`; }
 
 function createBlankWorkspaceData(id){
-  const cleanId = normalizeAccountId(id);
+  const cleanId = String(id || '').trim();
   return {
-    personnel:[{id:cleanId,name:cleanId,position:'',contact:'',status:'',signature:'',tags:[],avatar:'',isAdmin:true}],
-    projects:[],toolCategories:[],strategicGoals:[],strategicGoalArchives:[],tools:[],notifications:[],collaborations:[]
+    personnel:[{
+      id:cleanId,
+      name:cleanId,
+      position:'',
+      contact:'',
+      status:'',
+      signature:'',
+      tags:[],
+      avatar:'',
+      isAdmin:true
+    }],
+    projects:[],
+    toolCategories:[],
+    strategicGoals:[],
+    strategicGoalArchives:[],
+    tools:[],
+    notifications:[],
+    collaborations:[],
   };
 }
 
 function readLocalWorkspace(workspaceId){
   try{
-    const raw=localStorage.getItem(workspaceLocalKey(workspaceId));
+    const raw = localStorage.getItem(workspaceLocalKey(workspaceId));
     if(!raw) return null;
-    const parsed=JSON.parse(raw);
+    const parsed = JSON.parse(raw);
     return parsed && parsed.data ? parsed.data : parsed;
   }catch(e){ return null; }
 }
-function writeLocalWorkspace(workspaceId,data){
-  try{ localStorage.setItem(workspaceLocalKey(workspaceId),JSON.stringify({savedAt:Date.now(),data})); return true; }
+function writeLocalWorkspaceJson(workspaceId, dataJson){
+  try{
+    localStorage.setItem(workspaceLocalKey(workspaceId), `{"savedAt":${Date.now()},"data":${dataJson}}`);
+    return true;
+  }catch(e){ return false; }
+}
+function writeLocalWorkspace(workspaceId, data){
+  try{ return writeLocalWorkspaceJson(workspaceId, JSON.stringify(data)); }
   catch(e){ return false; }
 }
 
-// Deployment copy no longer uses the legacy cross-account registry.
+async function studioCloud(action, payload={}){
+  const res = await fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    cache:'no-store',
+    body:JSON.stringify({action, ...payload})
+  });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok || data?.error) throw new Error(data?.error || `云端请求失败（${res.status}）`);
+  return data;
+}
+
+// 保存采用“本地立即成功 + 后台合并同步”：UI 不再等待网络往返。
+let studioPendingSave = null;
+let studioSaveTimer = null;
+let studioSaveInFlight = false;
+let studioSaveRetryTimer = null;
+let studioPreviousIdentity = null;
+
+function studioQueueWorkspaceSave(workspaceId, data){
+  let dataJson;
+  try{ dataJson = JSON.stringify(data); }
+  catch(e){ console.error('序列化工作区失败', e); return false; }
+
+  const localSaved = writeLocalWorkspaceJson(workspaceId, dataJson);
+  studioPendingSave = {
+    workspaceId,
+    dataJson,
+    identity: normalizeAccountId(identity),
+    previousIdentity: normalizeAccountId(studioPreviousIdentity)
+  };
+  clearTimeout(studioSaveTimer);
+  studioSaveTimer = setTimeout(()=>{ studioFlushWorkspaceSave(); }, 70);
+  return localSaved;
+}
+
+async function studioFlushWorkspaceSave(){
+  if(studioSaveInFlight || !studioPendingSave) return;
+  const job = studioPendingSave;
+  studioPendingSave = null;
+  studioSaveInFlight = true;
+  clearTimeout(studioSaveRetryTimer);
+  try{
+    const body = `{"action":"save","identity":${JSON.stringify(job.identity)},"previousIdentity":${JSON.stringify(job.previousIdentity)},"workspaceId":${JSON.stringify(job.workspaceId)},"data":${job.dataJson}}`;
+    const res = await fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, cache:'no-store', body
+    });
+    const result = await res.json().catch(()=>({}));
+    if(!res.ok || result?.error) throw new Error(result?.error || `云端请求失败（${res.status}）`);
+    if(job.previousIdentity && normalizeAccountId(studioPreviousIdentity)===job.previousIdentity){
+      studioPreviousIdentity = null;
+    }
+  }catch(e){
+    console.error('云端同步失败，将自动重试', e);
+    // 保留更新更晚的 pending；只有没有新版本时才把失败版本放回队列。
+    if(!studioPendingSave) studioPendingSave = job;
+    studioSaveRetryTimer = setTimeout(()=>{ studioFlushWorkspaceSave(); }, 1400);
+  }finally{
+    studioSaveInFlight = false;
+    if(studioPendingSave && !studioSaveRetryTimer){
+      studioSaveTimer = setTimeout(()=>{ studioFlushWorkspaceSave(); }, 40);
+    }
+  }
+}
+
+async function studioFlushBeforeSwitch(){
+  clearTimeout(studioSaveTimer);
+  const deadline = Date.now() + 5000;
+  while((studioPendingSave || studioSaveInFlight) && Date.now() < deadline){
+    if(!studioSaveInFlight && studioPendingSave) await studioFlushWorkspaceSave();
+    if(studioSaveInFlight) await new Promise(r=>setTimeout(r,40));
+  }
+}
+
+// 旧 registry 接口保留为兼容壳；真实 ID -> 工作区关系由 Supabase v2 索引维护。
 async function loadAccountRegistry(){ return {}; }
 async function saveAccountRegistry(){ return true; }
 async function readLegacyData(){ return null; }
 async function migrateLegacyWorkspaceForId(){ return null; }
 
-async function bootstrapCloudWorkspace(){
-  const cloud=await studioCloud('bootstrap');
-  currentWorkspaceId=cloud.workspaceId;
-  identity=normalizeAccountId(cloud.identity);
-  if(cloud.data) writeLocalWorkspace(currentWorkspaceId,cloud.data);
-  return cloud.data;
+async function resolveWorkspaceForId(id, createIfMissing=true){
+  const normalized = normalizeAccountId(id);
+  if(!normalized) return null;
+  try{
+    const cloud = await studioCloud('bootstrap', {identity:normalized, createIfMissing});
+    if(!cloud?.workspaceId) return null;
+    currentWorkspaceId = cloud.workspaceId;
+    try{ localStorage.setItem(identityWorkspaceKey(normalized), currentWorkspaceId); }catch(e){}
+    if(cloud.data) writeLocalWorkspace(currentWorkspaceId, cloud.data);
+    return currentWorkspaceId;
+  }catch(e){
+    console.warn('云端登录失败，尝试本地缓存', e);
+    try{ return localStorage.getItem(identityWorkspaceKey(normalized)) || null; }
+    catch(_){ return null; }
+  }
 }
 
 async function loadWorkspaceData(workspaceId){
   if(!workspaceId) return null;
+  const local = readLocalWorkspace(workspaceId);
+  if(local) return local;
+  const id = normalizeAccountId(identity);
+  if(!id) return null;
   try{
-    const cloud=await studioCloud('load',{workspaceId});
-    if(cloud?.data){ writeLocalWorkspace(workspaceId,cloud.data); return cloud.data; }
-  }catch(e){
-    console.warn('云端读取失败，尝试本地缓存',e);
-  }
-  return readLocalWorkspace(workspaceId);
-}
-async function saveWorkspaceData(workspaceId,data){
-  if(!workspaceId || !data) return false;
-  let cloudSaved=false;
-  try{ await studioCloud('save',{workspaceId,data}); cloudSaved=true; }
-  catch(e){ console.error('云端保存失败',e); }
-  const localSaved=writeLocalWorkspace(workspaceId,data);
-  return cloudSaved || localSaved;
+    const cloud = await studioCloud('load', {identity:id, workspaceId});
+    if(cloud?.data){ writeLocalWorkspace(workspaceId, cloud.data); return cloud.data; }
+  }catch(e){ console.warn('云端读取失败', e); }
+  return null;
 }
 
-async function resolveWorkspaceForId(id,createIfMissing=true){
-  const normalized=normalizeAccountId(id);
-  const session=await studioAuthGetSession();
-  const email=normalizeAccountId(studioSessionEmail(session));
-  if(!email || normalized!==email) return currentWorkspaceId || null;
-  if(currentWorkspaceId) return currentWorkspaceId;
-  const cloud=await studioCloud('bootstrap');
-  currentWorkspaceId=cloud.workspaceId;
-  identity=email;
-  if(cloud.data) writeLocalWorkspace(currentWorkspaceId,cloud.data);
-  return currentWorkspaceId;
+async function saveWorkspaceData(workspaceId, data){
+  if(!workspaceId || !data) return false;
+  // 立即返回，不让按钮等待 Supabase 网络。
+  return studioQueueWorkspaceSave(workspaceId, data);
 }
+
 async function attachAccountIdToWorkspace(){ return true; }
 async function detachAccountIdToBlankWorkspace(){ return true; }
-async function renameAccountIdInRegistry(){ return true; }
+async function renameAccountIdInRegistry(oldId, newId){
+  if(normalizeAccountId(oldId)===normalizeAccountId(identity)) studioPreviousIdentity = normalizeAccountId(oldId);
+  return true;
+}
 
 async function loadData(){
   if(!currentWorkspaceId) return null;
@@ -6152,33 +6189,50 @@ async function loadData(){
 }
 async function saveData(){
   if(!state || !currentWorkspaceId) return false;
-  const ok=await saveWorkspaceData(currentWorkspaceId,state);
-  if(!ok){ showToast('云端保存失败，请检查网络后重试'); return false; }
+  const ok = await saveWorkspaceData(currentWorkspaceId, state);
+  if(!ok){ showToast('本地保存失败，请检查浏览器存储空间'); return false; }
   return true;
 }
 async function loadIdentity(){
-  const session=await studioAuthGetSession();
-  return normalizeAccountId(studioSessionEmail(session)) || null;
+  try{ return localStorage.getItem(IDENTITY_LOCAL_KEY) || null; }
+  catch(e){ return null; }
 }
 async function saveIdentity(id){
-  identity=normalizeAccountId(id) || null;
+  const oldIdentity = normalizeAccountId(identity);
+  const nextIdentity = normalizeAccountId(id) || null;
+  if(oldIdentity && nextIdentity && oldIdentity!==nextIdentity && !studioPreviousIdentity){
+    studioPreviousIdentity = oldIdentity;
+  }
+  identity = nextIdentity;
   try{
-    if(identity) localStorage.setItem('studio-current-identity',identity);
-    else localStorage.removeItem('studio-current-identity');
+    if(identity) localStorage.setItem(IDENTITY_LOCAL_KEY, identity);
+    else localStorage.removeItem(IDENTITY_LOCAL_KEY);
   }catch(e){}
+  return true;
 }
 async function loadReadIds(){
   if(!identity) return [];
+  const key = `read-notifications:${normalizeAccountId(identity)}`;
   try{
-    const res=await studioCloud('get_user_state',{key:'read-notifications'});
-    if(Array.isArray(res?.value)) return res.value;
+    const local = localStorage.getItem(key);
+    if(local) return JSON.parse(local);
+  }catch(e){}
+  try{
+    const res = await studioCloud('get_user_state',{identity:normalizeAccountId(identity),key:'read-notifications'});
+    if(Array.isArray(res?.value)){
+      try{ localStorage.setItem(key, JSON.stringify(res.value)); }catch(e){}
+      return res.value;
+    }
   }catch(e){ console.warn('读取通知状态失败',e); }
   return [];
 }
 async function saveReadIds(){
   if(!identity) return;
-  try{ await studioCloud('set_user_state',{key:'read-notifications',value:readIds}); }
-  catch(e){ console.warn('保存通知状态失败',e); }
+  const id = normalizeAccountId(identity);
+  const key = `read-notifications:${id}`;
+  try{ localStorage.setItem(key, JSON.stringify(readIds)); }catch(e){}
+  // 通知已读状态也后台同步，不阻塞关闭公告等操作。
+  studioCloud('set_user_state',{identity:id,key:'read-notifications',value:readIds}).catch(e=>console.warn('保存通知状态失败',e));
 }
 
 function getPersonnel(id){ return state.personnel.find(p=>p.id===id); }
@@ -6914,31 +6968,36 @@ function toolHost(url){
 
 /* ============ 初始化 ============ */
 async function init(){
-  accountRegistry={};
-  const session=await studioAuthGetSession();
-  if(!session){
-    document.getElementById('app').innerHTML='';
-    state=null;readIds=[];identity=null;currentWorkspaceId=null;
+  accountRegistry = await loadAccountRegistry();
+  identity = await loadIdentity();
+
+  if(!identity){
+    // 未登录时不渲染任何业务页面，避免登录页背后泄露团队信息。
+    document.getElementById('app').innerHTML = '';
+    state = null;
+    readIds = [];
     openAccountLoginModal({force:true});
     return;
   }
-  identity=normalizeAccountId(studioSessionEmail(session));
-  try{
-    state=await bootstrapCloudWorkspace();
-  }catch(err){
-    console.error(err);
-    document.getElementById('app').innerHTML='';
-    state=null;readIds=[];currentWorkspaceId=null;
-    openAccountLoginModal({force:true,errorText:'云端连接失败，请重新登录'});
-    return;
+
+  currentWorkspaceId = await resolveWorkspaceForId(identity, true);
+  state = await loadWorkspaceData(currentWorkspaceId);
+  if(!state){
+    state = createBlankWorkspaceData(identity);
+    await saveWorkspaceData(currentWorkspaceId, state);
   }
-  if(!state){ state=createBlankWorkspaceData(identity); await saveWorkspaceData(currentWorkspaceId,state); }
-  ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();
+  ensureToolData();
+  ensureApplicationsData();
+  ensurePersonnelData();
+  ensureStrategicGoalsData();
+  ensureStrategicArchiveData();
   await autoArchiveDueStrategicGoals();
-  readIds=await loadReadIds();
+  readIds = await loadReadIds();
   renderApp();
   if(currentPage==='notify') await markTeamAnnouncementsRead();
-  startCarousel();startStrategicArchiveTimer();syncAnnounceWidget(true);
+  startCarousel();
+  startStrategicArchiveTimer();
+  syncAnnounceWidget(true);
 }
 
 /* ============ 群公告悬浮对话框 ============ */
@@ -7099,68 +7158,80 @@ function findPersonnelByLoginId(rawId){
   return state.personnel.find(p=>normalizeAccountId(p.id)===normalized) || null;
 }
 
-function openAccountLoginModal({force=false,switchMode=false,errorText=''}={}){
-  const root=document.getElementById('modalRoot');
+function openAccountLoginModal({force=false, switchMode=false}={}){
+  const root = document.getElementById('modalRoot');
   if(!root) return;
-  root.innerHTML=`
+  root.innerHTML = `
     <div class="account-auth-screen" id="accountLoginMask">
       <div class="modal account-login-modal">
-        <div class="modal-title">工作室登录</div>
+        <div class="modal-title">注册 / 登录</div>
         <div class="account-login-form">
-          <div class="field"><label class="field-label">邮箱</label><input type="email" id="accountLoginEmail" autocomplete="email" placeholder="name@example.com"></div>
-          <div class="field"><label class="field-label">密码</label><input type="password" id="accountLoginPassword" autocomplete="current-password" placeholder="至少 6 位"></div>
-          <div class="account-login-hint">首次使用可直接注册；团队成员请使用管理员在「人员管理」里填写的同一邮箱。</div>
-          <div class="account-login-error" id="accountLoginError">${escapeHtml(errorText)}</div>
+          <div class="field">
+            <label class="field-label">ID</label>
+            <input type="text" id="accountLoginId" autocomplete="username" placeholder="输入 ID">
+          </div>
+          <div class="account-login-error" id="accountLoginError"></div>
           <div class="account-login-actions">
-            ${(!force && switchMode)?`<button class="btn" id="cancelAccountLogin">取消</button>`:''}
-            <button class="btn account-login-secondary" id="registerAccount">注册</button>
-            <button class="btn btn-primary" id="confirmAccountLogin">登录</button>
+            ${(!force && switchMode) ? `<button class="btn" id="cancelAccountLogin">取消</button>` : ''}
+            <button class="btn btn-primary" id="confirmAccountLogin">进入</button>
           </div>
         </div>
       </div>
     </div>`;
-  const emailInput=document.getElementById('accountLoginEmail');
-  const passInput=document.getElementById('accountLoginPassword');
-  const error=document.getElementById('accountLoginError');
-  const setBusy=(busy)=>{
-    ['confirmAccountLogin','registerAccount','cancelAccountLogin'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=busy;});
-  };
-  const completeLogin=async()=>{
-    const session=await studioAuthGetSession();
-    if(!session) throw new Error('登录未完成');
-    identity=normalizeAccountId(studioSessionEmail(session));
-    state=await bootstrapCloudWorkspace();
-    ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();
+
+  const input = document.getElementById('accountLoginId');
+  const error = document.getElementById('accountLoginError');
+  const submit = async ()=>{
+    const id = (input?.value || '').trim();
+    if(!id){
+      if(error) error.textContent = '请输入 ID';
+      input?.focus();
+      return;
+    }
+
+    // 切换账号前确保当前工作区最后一次修改已经排队，并尽量完成云端同步。
+    if(state && currentWorkspaceId){ await saveData(); await studioFlushBeforeSwitch(); }
+
+    const workspaceId = await resolveWorkspaceForId(id, true);
+    let nextState = await loadWorkspaceData(workspaceId);
+    if(!nextState){
+      nextState = createBlankWorkspaceData(id);
+      await saveWorkspaceData(workspaceId, nextState);
+    }
+
+    currentWorkspaceId = workspaceId;
+    state = nextState;
+    ensureToolData();
+    ensureApplicationsData();
+    ensurePersonnelData();
+    ensureStrategicGoalsData();
+    ensureStrategicArchiveData();
     await autoArchiveDueStrategicGoals();
-    readIds=await loadReadIds();
-    root.innerHTML='';currentPage='dashboard';selectedProjectId=null;projectWorkspaceMode='projects';
-    renderApp();syncAnnounceWidget(true);startCarousel();startStrategicArchiveTimer();
+
+    // 如果这是一个新注册的独立 ID，它会拥有一个全新的空工作区；
+    // 已经被团队管理员添加过的 ID，则通过 registry 自动进入对应团队工作区。
+    const person = findPersonnelByLoginId(id);
+    const loginId = person?.id || id;
+    await saveIdentity(loginId);
+    readIds = await loadReadIds();
+    root.innerHTML = '';
+    currentPage = 'dashboard';
+    selectedProjectId = null;
+    projectWorkspaceMode = 'projects';
+    renderApp();
+    syncAnnounceWidget(true);
   };
-  const login=async()=>{
-    const email=normalizeAccountId(emailInput?.value);const password=passInput?.value||'';
-    if(!email||!password){if(error)error.textContent='请输入邮箱和密码';return;}
-    setBusy(true);if(error)error.textContent='';
-    try{
-      await studioAuthSignIn(email,password);
-      await completeLogin();
-    }catch(err){if(error)error.textContent=err?.message||'登录失败';setBusy(false);}
-  };
-  const register=async()=>{
-    const email=normalizeAccountId(emailInput?.value);const password=passInput?.value||'';
-    if(!email||password.length<6){if(error)error.textContent='请输入有效邮箱，密码至少 6 位';return;}
-    setBusy(true);if(error)error.textContent='';
-    try{
-      const data=await studioAuthSignUp(email,password);
-      if(data?.session||data?.access_token){await completeLogin();return;}
-      if(error)error.textContent='注册成功，请先去邮箱完成验证，然后回来登录。';
-      setBusy(false);
-    }catch(err){if(error)error.textContent=err?.message||'注册失败';setBusy(false);}
-  };
-  document.getElementById('confirmAccountLogin').onclick=login;
-  document.getElementById('registerAccount').onclick=register;
-  const cancel=document.getElementById('cancelAccountLogin');if(cancel)cancel.onclick=()=>{root.innerHTML='';};
-  passInput?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();login();}});
-  setTimeout(()=>emailInput?.focus(),0);
+
+  document.getElementById('confirmAccountLogin').onclick = submit;
+  const cancel = document.getElementById('cancelAccountLogin');
+  if(cancel) cancel.onclick = ()=>{ root.innerHTML=''; };
+  input?.addEventListener('keydown', e=>{
+    if(e.key==='Enter'){
+      e.preventDefault();
+      submit();
+    }
+  });
+  setTimeout(()=>input?.focus(),0);
 }
 
 function renderApp(){
@@ -7241,7 +7312,6 @@ function renderApp(){
     e.stopPropagation();
     if(identityMenu) identityMenu.classList.remove('open');
     if(state && currentWorkspaceId) await saveData();
-    await studioAuthSignOut();
     await saveIdentity('');
     currentWorkspaceId = null;
     state = null;
@@ -8091,7 +8161,7 @@ function openPersonDetailModal(personId){
       </div>
     </div>
     <div class="field-row">
-      <div class="field"><label class="field-label">ID（登录邮箱）</label><input type="text" id="personDetailId" value="${escapeHtml(person.id)}" placeholder="输入 ID"></div>
+      <div class="field"><label class="field-label">ID</label><input type="text" id="personDetailId" value="${escapeHtml(person.id)}" placeholder="输入 ID"></div>
       <div class="field"><label class="field-label">姓名</label><input type="text" id="personDetailName" value="${escapeHtml(person.name)}"></div>
     </div>
     <div class="field"><label class="field-label">岗位</label><input type="text" id="personDetailPosition" value="${escapeHtml(person.position||'')}"></div>
@@ -8196,7 +8266,6 @@ function openPersonDetailModal(personId){
       const name = document.getElementById('personDetailName').value.trim();
       const position = document.getElementById('personDetailPosition').value.trim();
       if(!newId){ showToast('请输入人员 ID'); return; }
-      if(oldId===identity && normalizeAccountId(newId)!==normalizeAccountId(oldId)){ showToast('当前登录邮箱不能在此修改'); return; }
       if(!name){ showToast('请输入姓名'); return; }
       if(state.personnel.some(p=>p!==person && String(p.id).toLowerCase()===newId.toLowerCase())){
         showToast('这个人员 ID 已存在'); return;
@@ -8300,7 +8369,7 @@ function openAddPersonModal(){
       </div>
     </div>
     <div class="field-row">
-      <div class="field"><label class="field-label">ID（登录邮箱）</label><input type="text" id="newPersonId" placeholder="输入 ID"></div>
+      <div class="field"><label class="field-label">ID</label><input type="text" id="newPersonId" placeholder="输入 ID"></div>
       <div class="field"><label class="field-label">姓名</label><input type="text" id="newPersonName" placeholder="姓名"></div>
     </div>
     <div class="field"><label class="field-label">岗位</label><input type="text" id="newPersonPosition" placeholder="岗位"></div>
