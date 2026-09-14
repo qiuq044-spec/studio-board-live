@@ -5865,6 +5865,27 @@ input:focus,textarea:focus,select:focus,input[type=number]:focus,input[type=date
 .password-change-modal .field:last-of-type{margin-bottom:0;}
 </style>
 
+
+<style id="dashboard-tool-longpress-sort-style">
+/* 主页工具：长按后进入排序状态；普通点击仍打开链接。 */
+.dashboard-tools-card .dashboard-tool-sortable .tool-chip{
+  position:relative;
+  user-select:none;
+  -webkit-user-select:none;
+  -webkit-touch-callout:none;
+  transition:transform .14s ease, box-shadow .14s ease, opacity .14s ease;
+}
+.dashboard-tools-card .dashboard-tool-sortable .tool-chip.home-tool-dragging{
+  z-index:8;
+  cursor:grabbing;
+  transform:scale(1.025);
+  opacity:.92;
+  box-shadow:10px 10px 22px rgba(170,163,154,.30),-8px -8px 20px rgba(250,248,244,.72)!important;
+}
+.dashboard-tools-card .dashboard-tool-sortable.home-tool-sorting .tool-chip:not(.home-tool-dragging){
+  transition:transform .12s ease;
+}
+</style>
 </head>
 <body>
 <div id="app"></div>
@@ -6040,32 +6061,115 @@ const STUDIO_SYNC_FUNCTION = 'studio-auth-sync-v3';
 const WORKSPACE_LOCAL_PREFIX = 'studio-workspace-local-v3:';
 const IDENTITY_LOCAL_KEY = 'studio-current-identity';
 const AUTH_SESSION_LOCAL_KEY = 'studio-supabase-auth-v3';
+const STUDIO_WORKSPACE_SYNC_FUNCTION = 'studio-workspace-sync-v4';
 function normalizeAccountId(id){ return String(id || '').trim().toLowerCase(); }
 function workspaceLocalKey(workspaceId){ return `${WORKSPACE_LOCAL_PREFIX}${workspaceId}`; }
 function readLocalWorkspace(workspaceId){try{const raw=localStorage.getItem(workspaceLocalKey(workspaceId));if(!raw)return null;const parsed=JSON.parse(raw);return parsed&&parsed.data?parsed.data:parsed;}catch(e){return null;}}
 function writeLocalWorkspaceJson(workspaceId,dataJson){try{localStorage.setItem(workspaceLocalKey(workspaceId),`{"savedAt":${Date.now()},"data":${dataJson}}`);return true;}catch(e){return false;}}
 function writeLocalWorkspace(workspaceId,data){try{return writeLocalWorkspaceJson(workspaceId,JSON.stringify(data));}catch(e){return false;}}
+function studioClone(v){return v===undefined?v:JSON.parse(JSON.stringify(v));}
+function studioSame(a,b){try{return JSON.stringify(a)===JSON.stringify(b);}catch(e){return false;}}
+function studioIsObj(v){return v!==null&&typeof v==='object'&&!Array.isArray(v);}
+function studioIdentifiableArray(arr){return Array.isArray(arr)&&(arr.length===0||arr.every(x=>studioIsObj(x)&&x.id!==undefined&&x.id!==null&&String(x.id)!==''));}
+function studioMergeThreeWay(latest,base,next){
+  if(studioSame(base,next)) return studioClone(latest);
+  if(Array.isArray(base)&&Array.isArray(next)){
+    if(Array.isArray(latest)&&studioIdentifiableArray(base)&&studioIdentifiableArray(next)&&studioIdentifiableArray(latest)){
+      const b=new Map(base.map(x=>[String(x.id),x]));
+      const n=new Map(next.map(x=>[String(x.id),x]));
+      const l=new Map(latest.map(x=>[String(x.id),x]));
+      for(const id of b.keys()) if(!n.has(id)) l.delete(id);
+      for(const [id,nv] of n){
+        if(!b.has(id)){l.set(id,studioClone(nv));continue;}
+        const bv=b.get(id),lv=l.has(id)?l.get(id):bv;
+        if(!studioSame(bv,nv)) l.set(id,studioMergeThreeWay(lv,bv,nv));
+      }
+      const order=[];
+      for(const x of latest){const id=String(x.id);if(l.has(id)&&!order.includes(id))order.push(id);}
+      for(const x of next){const id=String(x.id);if(l.has(id)&&!order.includes(id))order.push(id);}
+      return order.map(id=>l.get(id));
+    }
+    return studioClone(next);
+  }
+  if(studioIsObj(base)&&studioIsObj(next)){
+    const out=studioIsObj(latest)?studioClone(latest):{};
+    const keys=new Set([...Object.keys(base),...Object.keys(next)]);
+    for(const k of keys){
+      const hasB=Object.prototype.hasOwnProperty.call(base,k),hasN=Object.prototype.hasOwnProperty.call(next,k);
+      if(hasB&&!hasN){delete out[k];continue;}
+      if(!hasB&&hasN){out[k]=studioClone(next[k]);continue;}
+      if(studioSame(base[k],next[k]))continue;
+      out[k]=studioMergeThreeWay(studioIsObj(out)||Array.isArray(out)?out[k]:undefined,base[k],next[k]);
+    }
+    return out;
+  }
+  return studioClone(next);
+}
 let studioAuthSession=null;
-function loadStoredAuthSession(){try{const raw=localStorage.getItem(AUTH_SESSION_LOCAL_KEY);studioAuthSession=raw?JSON.parse(raw):null;}catch(e){studioAuthSession=null;}return studioAuthSession;}
-function persistAuthSession(session){studioAuthSession=session||null;try{if(studioAuthSession)localStorage.setItem(AUTH_SESSION_LOCAL_KEY,JSON.stringify(studioAuthSession));else localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);}catch(e){}}
+function loadStoredAuthSession(){
+  try{
+    let raw=sessionStorage.getItem(AUTH_SESSION_LOCAL_KEY);
+    if(!raw){raw=localStorage.getItem(AUTH_SESSION_LOCAL_KEY);if(raw){sessionStorage.setItem(AUTH_SESSION_LOCAL_KEY,raw);localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);}}
+    studioAuthSession=raw?JSON.parse(raw):null;
+  }catch(e){studioAuthSession=null;}
+  return studioAuthSession;
+}
+function persistAuthSession(session){studioAuthSession=session||null;try{if(studioAuthSession)sessionStorage.setItem(AUTH_SESSION_LOCAL_KEY,JSON.stringify(studioAuthSession));else sessionStorage.removeItem(AUTH_SESSION_LOCAL_KEY);localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);}catch(e){}}
 async function studioAuthRefresh(){if(!studioAuthSession?.refresh_token)throw new Error('登录已过期，请重新登录');const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({refresh_token:studioAuthSession.refresh_token}),cache:'no-store'});const data=await res.json().catch(()=>({}));if(!res.ok||!data?.access_token){persistAuthSession(null);throw new Error(data?.error_description||data?.msg||'登录已过期，请重新登录');}persistAuthSession({access_token:data.access_token,refresh_token:data.refresh_token||studioAuthSession.refresh_token,expires_at:Date.now()+Math.max(60,Number(data.expires_in)||3600)*1000,user_id:data.user?.id||studioAuthSession.user_id||null});return studioAuthSession;}
 async function ensureStudioAuthSession(){if(!studioAuthSession)loadStoredAuthSession();if(!studioAuthSession?.access_token)throw new Error('请先登录');if(studioAuthSession.expires_at&&Date.now()>studioAuthSession.expires_at-30000)await studioAuthRefresh();return studioAuthSession;}
 async function studioCloud(action,payload={},options={}){const needsAuth=options.auth!==false;if(needsAuth)await ensureStudioAuthSession();const request=async()=>{const headers={'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY};if(needsAuth&&studioAuthSession?.access_token)headers.Authorization=`Bearer ${studioAuthSession.access_token}`;return fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`,{method:'POST',headers,cache:'no-store',body:JSON.stringify({action,...payload})});};let res=await request();if(needsAuth&&res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}const data=await res.json().catch(()=>({}));if(!res.ok||data?.error)throw new Error(data?.error||`云端请求失败（${res.status}）`);return data;}
+async function studioWorkspaceCloud(action,payload={}){await ensureStudioAuthSession();const request=async()=>fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_WORKSPACE_SYNC_FUNCTION}`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`},cache:'no-store',body:JSON.stringify({action,...payload})});let res=await request();if(res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}const data=await res.json().catch(()=>({}));if(!res.ok||data?.error)throw new Error(data?.error||`同步请求失败（${res.status}）`);return data;}
 async function studioLoginByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const resolved=await studioCloud('resolve_login',{loginId:id},{auth:false});const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('ID 或密码错误');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});return await studioCloud('session');}
 async function studioRegisterByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const created=await studioCloud('register',{loginId:id,password},{auth:false});const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:created.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('注册成功，但自动登录失败，请重新登录');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});const info=await studioCloud('session');return {...info,joinedTeam:!!created.joinedTeam,workspaceType:created.workspaceType};}
 async function studioRestoreSession(){loadStoredAuthSession();if(!studioAuthSession?.access_token)return null;try{return await studioCloud('session');}catch(e){persistAuthSession(null);return null;}}
-async function studioAuthSignOut(){try{if(studioAuthSession?.access_token)await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/logout?scope=local`,{method:'POST',headers:{'apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`}});}catch(e){}persistAuthSession(null);}
+async function studioAuthSignOut(){stopWorkspaceLiveSync();try{if(studioAuthSession?.access_token)await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/logout?scope=local`,{method:'POST',headers:{'apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`}});}catch(e){}persistAuthSession(null);}
 async function studioChangePassword(currentPassword,newPassword){if(!identity)throw new Error('请先登录');const resolved=await studioCloud('resolve_login',{loginId:identity},{auth:false});const verify=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password:currentPassword}),cache:'no-store'});const verified=await verify.json().catch(()=>({}));if(!verify.ok||!verified?.access_token)throw new Error('当前密码不正确');persistAuthSession({access_token:verified.access_token,refresh_token:verified.refresh_token,expires_at:Date.now()+Math.max(60,Number(verified.expires_in)||3600)*1000,user_id:verified.user?.id||null});const update=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/user`,{method:'PUT',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`},body:JSON.stringify({password:newPassword}),cache:'no-store'});const updated=await update.json().catch(()=>({}));if(!update.ok||updated?.error)throw new Error(updated?.msg||updated?.error_description||updated?.error||'修改密码失败');await studioCloud('mark_password_changed');return true;}
+let studioBaselineData=null,studioBaselineUpdatedAt=null;
+function studioSetBaseline(data,updatedAt){studioBaselineData=data?studioClone(data):null;studioBaselineUpdatedAt=updatedAt||null;}
 let studioPendingSave=null,studioSaveTimer=null,studioSaveInFlight=false,studioSaveRetryTimer=null;
-function studioQueueWorkspaceSave(workspaceId,data){let dataJson;try{dataJson=JSON.stringify(data);}catch(e){console.error('序列化工作区失败',e);return false;}const localSaved=writeLocalWorkspaceJson(workspaceId,dataJson);studioPendingSave={workspaceId,dataJson};clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},60);return localSaved;}
-async function studioFlushWorkspaceSave(){if(studioSaveInFlight||!studioPendingSave)return;const job=studioPendingSave;studioPendingSave=null;studioSaveInFlight=true;if(studioSaveRetryTimer){clearTimeout(studioSaveRetryTimer);studioSaveRetryTimer=null;}try{await studioCloud('save',{workspaceId:job.workspaceId,data:JSON.parse(job.dataJson)});}catch(e){console.error('云端同步失败，将自动重试',e);if(!studioPendingSave)studioPendingSave=job;studioSaveRetryTimer=setTimeout(()=>{studioSaveRetryTimer=null;studioFlushWorkspaceSave();},1200);}finally{studioSaveInFlight=false;if(studioPendingSave&&!studioSaveRetryTimer){clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},40);}}}
+function studioQueueWorkspaceSave(workspaceId,data){
+  let dataJson,baseJson;
+  try{dataJson=JSON.stringify(data);baseJson=JSON.stringify(studioBaselineData||data);}catch(e){console.error('序列化工作区失败',e);return false;}
+  const localSaved=writeLocalWorkspaceJson(workspaceId,dataJson);
+  studioPendingSave={workspaceId,dataJson,baseJson};
+  clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},80);
+  return localSaved;
+}
+async function studioFlushWorkspaceSave(){
+  if(studioSaveInFlight||!studioPendingSave)return;
+  const job=studioPendingSave;studioPendingSave=null;studioSaveInFlight=true;
+  if(studioSaveRetryTimer){clearTimeout(studioSaveRetryTimer);studioSaveRetryTimer=null;}
+  try{
+    const jobBase=JSON.parse(job.baseJson),jobData=JSON.parse(job.dataJson);
+    const res=await studioWorkspaceCloud('merge_save',{workspaceId:job.workspaceId,baseData:jobBase,data:jobData});
+    const merged=res.data;
+    studioSetBaseline(merged,res.updatedAt);
+    if(studioPendingSave){
+      const pendingOld=JSON.parse(studioPendingSave.dataJson);
+      const rebased=studioMergeThreeWay(merged,jobData,pendingOld);
+      studioPendingSave.baseJson=JSON.stringify(merged);
+      studioPendingSave.dataJson=JSON.stringify(rebased);
+      if(studioSame(state,pendingOld)) state=rebased;
+    }else if(studioSame(state,jobData)){
+      state=merged;
+    }
+    if(state)writeLocalWorkspace(job.workspaceId,state);
+  }catch(e){
+    console.error('云端同步失败，将自动重试',e);
+    if(!studioPendingSave)studioPendingSave=job;
+    studioSaveRetryTimer=setTimeout(()=>{studioSaveRetryTimer=null;studioFlushWorkspaceSave();},1400);
+  }finally{
+    studioSaveInFlight=false;
+    if(studioPendingSave&&!studioSaveRetryTimer){clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},50);}
+  }
+}
 async function studioFlushBeforeSwitch(){clearTimeout(studioSaveTimer);studioSaveTimer=null;const deadline=Date.now()+5000;while((studioPendingSave||studioSaveInFlight)&&Date.now()<deadline){if(!studioSaveInFlight&&studioPendingSave)await studioFlushWorkspaceSave();if(studioSaveInFlight)await new Promise(r=>setTimeout(r,40));}}
 async function loadAccountRegistry(){return {};}
 async function saveAccountRegistry(){return true;}
 async function readLegacyData(){return null;}
 async function migrateLegacyWorkspaceForId(){return null;}
 async function resolveWorkspaceForId(){return currentWorkspaceId;}
-async function loadWorkspaceData(workspaceId){if(!workspaceId)return null;try{const cloud=await studioCloud('load');if(cloud?.data){writeLocalWorkspace(workspaceId,cloud.data);return cloud.data;}}catch(e){console.warn('云端读取失败，使用本地缓存',e);}return readLocalWorkspace(workspaceId);}
+async function loadWorkspaceData(workspaceId){if(!workspaceId)return null;try{const cloud=await studioWorkspaceCloud('load',{workspaceId});if(cloud?.data){studioSetBaseline(cloud.data,cloud.updatedAt);writeLocalWorkspace(workspaceId,cloud.data);return cloud.data;}}catch(e){console.warn('云端读取失败，使用本地缓存',e);}const local=readLocalWorkspace(workspaceId);if(local)studioSetBaseline(local,null);return local;}
 async function saveWorkspaceData(workspaceId,data){if(!workspaceId||!data)return false;return studioQueueWorkspaceSave(workspaceId,data);}
 async function inviteMemberToWorkspace(id,isAdmin,person,projectIds){return await studioCloud('invite_member',{loginId:normalizeAccountId(id),isAdmin:!!isAdmin,person,projectIds:[...projectIds]});}
 async function createMemberAccount(id,password,isAdmin,person,projectIds){return await inviteMemberToWorkspace(id,isAdmin,person,projectIds||[]);}
@@ -6074,8 +6178,33 @@ async function detachAccountIdToBlankWorkspace(id){return await studioCloud('del
 async function renameAccountIdInRegistry(oldId,newId){return await studioCloud('rename_member_account',{oldLoginId:normalizeAccountId(oldId),newLoginId:normalizeAccountId(newId)});}
 async function loadData(){return currentWorkspaceId?await loadWorkspaceData(currentWorkspaceId):null;}
 async function saveData(){if(!state||!currentWorkspaceId)return false;const ok=await saveWorkspaceData(currentWorkspaceId,state);if(!ok){showToast('本地保存失败，请检查浏览器存储空间');return false;}return true;}
-async function loadIdentity(){try{return localStorage.getItem(IDENTITY_LOCAL_KEY)||null;}catch(e){return null;}}
-async function saveIdentity(id){identity=normalizeAccountId(id)||null;try{if(identity)localStorage.setItem(IDENTITY_LOCAL_KEY,identity);else localStorage.removeItem(IDENTITY_LOCAL_KEY);}catch(e){}return true;}
+let studioLiveSyncTimer=null,studioLiveSyncBusy=false;
+function stopWorkspaceLiveSync(){if(studioLiveSyncTimer){clearInterval(studioLiveSyncTimer);studioLiveSyncTimer=null;}}
+function studioEditingNow(){const ae=document.activeElement;const tag=(ae?.tagName||'').toLowerCase();return tag==='input'||tag==='textarea'||tag==='select'||ae?.isContentEditable;}
+async function studioPullRemoteIfChanged(){
+  if(studioLiveSyncBusy||!currentWorkspaceId||!studioAuthSession?.access_token||studioPendingSave||studioSaveInFlight||studioEditingNow())return;
+  studioLiveSyncBusy=true;
+  try{
+    const head=await studioWorkspaceCloud('head',{workspaceId:currentWorkspaceId});
+    if(!head?.updatedAt||head.updatedAt===studioBaselineUpdatedAt)return;
+    const remote=await studioWorkspaceCloud('load',{workspaceId:currentWorkspaceId});
+    if(!remote?.data)return;
+    const previousBaseline=studioBaselineData?studioClone(studioBaselineData):studioClone(state||{});
+    const localCurrent=studioClone(state||{});
+    const localDirty=!studioSame(previousBaseline,localCurrent);
+    state=localDirty?studioMergeThreeWay(remote.data,previousBaseline,localCurrent):remote.data;
+    studioSetBaseline(remote.data,remote.updatedAt);
+    writeLocalWorkspace(currentWorkspaceId,state);
+    ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();
+    if(document.getElementById('pageRoot')){renderPage();syncAnnounceWidget(false);}
+    refreshOpenPersonDetailReadonly();
+  }catch(e){console.warn('多人同步检查失败',e);}
+  finally{studioLiveSyncBusy=false;}
+}
+function startWorkspaceLiveSync(){stopWorkspaceLiveSync();studioLiveSyncTimer=setInterval(studioPullRemoteIfChanged,2200);}
+
+async function loadIdentity(){try{let v=sessionStorage.getItem(IDENTITY_LOCAL_KEY);if(!v){v=localStorage.getItem(IDENTITY_LOCAL_KEY)||'';if(v){sessionStorage.setItem(IDENTITY_LOCAL_KEY,v);localStorage.removeItem(IDENTITY_LOCAL_KEY);}}return v||null;}catch(e){return null;}}
+async function saveIdentity(id){identity=normalizeAccountId(id)||null;try{if(identity)sessionStorage.setItem(IDENTITY_LOCAL_KEY,identity);else sessionStorage.removeItem(IDENTITY_LOCAL_KEY);localStorage.removeItem(IDENTITY_LOCAL_KEY);}catch(e){}return true;}
 async function loadReadIds(){if(!identity)return [];const key=`read-notifications:${normalizeAccountId(identity)}`;try{const res=await studioCloud('get_user_state',{key:'read-notifications'});if(Array.isArray(res?.value)){localStorage.setItem(key,JSON.stringify(res.value));return res.value;}}catch(e){console.warn('读取通知状态失败',e);}try{const local=localStorage.getItem(key);return local?JSON.parse(local):[];}catch(e){return [];}}
 async function saveReadIds(){if(!identity)return;const key=`read-notifications:${normalizeAccountId(identity)}`;try{localStorage.setItem(key,JSON.stringify(readIds));}catch(e){}studioCloud('set_user_state',{key:'read-notifications',value:readIds}).catch(e=>console.warn('保存通知状态失败',e));}
 
@@ -6096,6 +6225,15 @@ function ensureToolData(){
   state.tools.forEach(tool=>{
     if(!Object.prototype.hasOwnProperty.call(tool,'categoryId')) tool.categoryId = null;
   });
+  if(!Array.isArray(state.homeToolOrder)) state.homeToolOrder = state.tools.map(t=>t.id);
+  const existingIds = new Set(state.tools.map(t=>t.id));
+  state.homeToolOrder = state.homeToolOrder.filter(id=>existingIds.has(id));
+  state.tools.forEach(t=>{ if(!state.homeToolOrder.includes(t.id)) state.homeToolOrder.push(t.id); });
+}
+function dashboardOrderedTools(){
+  ensureToolData();
+  const rank = new Map(state.homeToolOrder.map((id,index)=>[id,index]));
+  return state.tools.slice().sort((a,b)=>(rank.get(a.id)??999999)-(rank.get(b.id)??999999));
 }
 
 
@@ -6815,9 +6953,11 @@ async function init(){
   accountRegistry=await loadAccountRegistry();
   const sessionInfo=await studioRestoreSession();
   if(!sessionInfo){identity=null;currentWorkspaceId=null;state=null;readIds=[];document.getElementById('app').innerHTML='';openAccountLoginModal({force:true});return;}
-  currentWorkspaceId=sessionInfo.workspaceId;state=sessionInfo.data;await saveIdentity(sessionInfo.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);
+  currentWorkspaceId=sessionInfo.workspaceId;
+  state=await loadWorkspaceData(currentWorkspaceId) || sessionInfo.data;
+  await saveIdentity(sessionInfo.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);
   ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();
-  readIds=await loadReadIds();renderApp();if(currentPage==='notify')await markTeamAnnouncementsRead();startCarousel();startStrategicArchiveTimer();syncAnnounceWidget(true);
+  readIds=await loadReadIds();renderApp();if(currentPage==='notify')await markTeamAnnouncementsRead();startCarousel();startStrategicArchiveTimer();syncAnnounceWidget(true);startWorkspaceLiveSync();
   if(sessionInfo.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);
 }
 
@@ -7014,7 +7154,7 @@ function openAccountLoginModal({force=false, switchMode=false}={}){
   const setMode=(mode)=>{const isLogin=mode==='login';loginTab.classList.toggle('active',isLogin);registerTab.classList.toggle('active',!isLogin);loginPanel.hidden=!isLogin;registerPanel.hidden=isLogin;setTimeout(()=>document.getElementById(isLogin?'accountLoginId':'accountRegisterId')?.focus(),0);};
   loginTab.onclick=()=>setMode('login');registerTab.onclick=()=>setMode('register');
   document.querySelectorAll('#accountLoginMask [data-password-toggle]').forEach(btn=>{btn.onclick=()=>{const input=document.getElementById(btn.dataset.passwordToggle);if(!input)return;input.type=input.type==='password'?'text':'password';btn.textContent=input.type==='password'?'显示':'隐藏';};});
-  const enterWorkspace=async(info)=>{currentWorkspaceId=info.workspaceId;state=info.data;await saveIdentity(info.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();readIds=await loadReadIds();root.innerHTML='';currentPage='dashboard';selectedProjectId=null;projectWorkspaceMode='projects';renderApp();syncAnnounceWidget(true);if(info.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);};
+  const enterWorkspace=async(info)=>{currentWorkspaceId=info.workspaceId;state=await loadWorkspaceData(currentWorkspaceId)||info.data;await saveIdentity(info.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();readIds=await loadReadIds();root.innerHTML='';currentPage='dashboard';selectedProjectId=null;projectWorkspaceMode='projects';renderApp();syncAnnounceWidget(true);startWorkspaceLiveSync();if(info.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);};
   const loginSubmit=async()=>{const input=document.getElementById('accountLoginId'),password=document.getElementById('accountLoginPassword'),error=document.getElementById('accountLoginError'),btn=document.getElementById('confirmAccountLogin');const id=(input?.value||'').trim(),pwd=password?.value||'';if(!id){if(error)error.textContent='请输入 ID';input?.focus();return;}if(!pwd){if(error)error.textContent='请输入密码';password?.focus();return;}if(error)error.textContent='';if(btn){btn.disabled=true;btn.textContent='登录中…';}try{if(state&&currentWorkspaceId){await saveData();await studioFlushBeforeSwitch();}const info=await studioLoginByIdPassword(id,pwd);await enterWorkspace(info);}catch(e){if(error)error.textContent=e?.message||'登录失败';if(btn){btn.disabled=false;btn.textContent='登录';}}};
   const registerSubmit=async()=>{const idInput=document.getElementById('accountRegisterId'),pwdInput=document.getElementById('accountRegisterPassword'),pwd2Input=document.getElementById('accountRegisterPasswordConfirm'),error=document.getElementById('accountRegisterError'),btn=document.getElementById('confirmAccountRegister');const id=(idInput?.value||'').trim(),pwd=pwdInput?.value||'',pwd2=pwd2Input?.value||'';if(!id){if(error)error.textContent='请设置 ID';idInput?.focus();return;}if(pwd.length<6){if(error)error.textContent='密码至少 6 位';pwdInput?.focus();return;}if(pwd!==pwd2){if(error)error.textContent='两次输入的密码不一致';pwd2Input?.focus();return;}if(error)error.textContent='';if(btn){btn.disabled=true;btn.textContent='注册中…';}try{if(state&&currentWorkspaceId){await saveData();await studioFlushBeforeSwitch();}const info=await studioRegisterByIdPassword(id,pwd);await enterWorkspace(info);setTimeout(()=>showToast(info.joinedTeam?'注册成功，已自动加入团队':'注册成功，已创建个人账号'),80);}catch(e){if(error)error.textContent=e?.message||'注册失败';if(btn){btn.disabled=false;btn.textContent='注册';}}};
   document.getElementById('confirmAccountLogin').onclick=loginSubmit;document.getElementById('confirmAccountRegister').onclick=registerSubmit;
@@ -7352,7 +7492,7 @@ function pageDashboard(){
         return {
           member:m,
           name:m.name,
-          position:person?.position || m.role || '',
+          signature:person?.signature || '',
           goals,
           maxPriority:Math.max(...goals.map(g=>priorityRank(g.priority))),
           nearestDeadline:Math.min(...goals.map(g=>new Date(g.deadline).getTime()))
@@ -7417,7 +7557,7 @@ function pageDashboard(){
                     ${avatarHtml(gr.member.personnelId, gr.name,'sm')}
                     <div class="meta">
                       <div class="nm">${escapeHtml(gr.name)}</div>
-                      <div class="rl">${escapeHtml(gr.position)}</div>
+                      ${gr.signature ? `<div class="rl">${escapeHtml(gr.signature)}</div>` : ''}
                     </div>
                   </div>
                   ${gr.goals.map(g=>{
@@ -7472,8 +7612,8 @@ function pageDashboard(){
 
         <div class="dashboard-tools-card section">
           <div class="section-title"><span>工具链接</span><span class="count">${state.tools.length} 个</span></div>
-          ${state.tools.length ? `<div class="tool-strip">${state.tools.map(t=>`
-            <a class="tool-chip" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer">
+          ${state.tools.length ? `<div class="tool-strip dashboard-tool-sortable">${dashboardOrderedTools().map(t=>`
+            <a class="tool-chip" data-home-tool-id="${escapeHtml(t.id)}" draggable="false" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer" title="长按拖动排序">
               <span class="dotico"></span>${escapeHtml(t.name)}
             </a>`).join('')}</div>` : `<div class="empty">还没有添加工具，去「工具管理」添加吧</div>`}
         </div>
@@ -7506,6 +7646,88 @@ function startCarousel(){
     carouselIdx = (carouselIdx + 1) % recentNotifs.length;
     renderCarouselFrame();
   }, 4200);
+}
+
+function refreshOpenPersonDetailReadonly(){
+  const modal = document.querySelector('#modalRoot .modal[data-person-detail-id]');
+  if(!modal) return;
+  const person = getPersonnel(modal.dataset.personDetailId);
+  if(!person) return;
+  const contact = modal.querySelector('#personDetailContactReadonly');
+  const status = modal.querySelector('#personDetailStatusReadonly');
+  const tags = modal.querySelector('#personDetailTagsReadonly');
+  if(contact) contact.textContent = person.contact || '—';
+  if(status) status.textContent = person.status || '工作中';
+  if(tags) tags.textContent = Array.isArray(person.tags) && person.tags.length ? person.tags.join('、') : '—';
+}
+
+let dashboardToolDragSuppressUntil = 0;
+function bindDashboardToolSorting(root){
+  const strip = root.querySelector('.dashboard-tool-sortable');
+  if(!strip) return;
+  const items = [...strip.querySelectorAll('[data-home-tool-id]')];
+  items.forEach(item=>{
+    item.addEventListener('click',e=>{
+      if(Date.now()<dashboardToolDragSuppressUntil){e.preventDefault();e.stopPropagation();}
+    },true);
+    item.addEventListener('dragstart',e=>e.preventDefault());
+    item.addEventListener('pointerdown',e=>{
+      if(e.button!==undefined && e.button!==0) return;
+      const startX=e.clientX, startY=e.clientY;
+      let active=false, finished=false;
+      const pointerId=e.pointerId;
+      let pressTimer=setTimeout(()=>{
+        active=true;
+        item.classList.add('home-tool-dragging');
+        strip.classList.add('home-tool-sorting');
+        if(navigator.vibrate) try{navigator.vibrate(20);}catch(_e){}
+      },420);
+      const cleanup=()=>{
+        clearTimeout(pressTimer);
+        document.removeEventListener('pointermove',onMove,true);
+        document.removeEventListener('pointerup',onUp,true);
+        document.removeEventListener('pointercancel',onCancel,true);
+      };
+      const onMove=ev=>{
+        if(ev.pointerId!==pointerId) return;
+        if(!active){
+          if(Math.hypot(ev.clientX-startX,ev.clientY-startY)>8){
+            clearTimeout(pressTimer);
+            pressTimer=0;
+          }
+          return;
+        }
+        ev.preventDefault();
+        const target=document.elementFromPoint(ev.clientX,ev.clientY)?.closest?.('[data-home-tool-id]');
+        if(!target || target===item || target.parentElement!==strip) return;
+        const rect=target.getBoundingClientRect();
+        const before=ev.clientY < rect.top + rect.height/2;
+        strip.insertBefore(item,before?target:target.nextSibling);
+      };
+      const finish=async(save)=>{
+        if(finished) return;
+        finished=true;
+        cleanup();
+        if(!active) return;
+        active=false;
+        item.classList.remove('home-tool-dragging');
+        strip.classList.remove('home-tool-sorting');
+        dashboardToolDragSuppressUntil=Date.now()+500;
+        if(save){
+          state.homeToolOrder=[...strip.querySelectorAll('[data-home-tool-id]')].map(el=>el.dataset.homeToolId);
+          await saveData();
+          showToast('工具顺序已保存');
+        }else{
+          renderPage();
+        }
+      };
+      const onUp=ev=>{if(ev.pointerId===pointerId)finish(true);};
+      const onCancel=ev=>{if(ev.pointerId===pointerId)finish(false);};
+      document.addEventListener('pointermove',onMove,{capture:true,passive:false});
+      document.addEventListener('pointerup',onUp,true);
+      document.addEventListener('pointercancel',onCancel,true);
+    });
+  });
 }
 
 /* ============ 项目管理 ============ */
@@ -7642,12 +7864,14 @@ function memberBlock(proj, m){
   const activeGoals = m.goals.filter(g=>g.status!=='已完成');
   const doneGoals = m.goals.filter(g=>g.status==='已完成');
   const key = `${proj.id}|${m.id}`;
+  const currentPerson = m.personnelId ? getPersonnel(m.personnelId) : null;
+  const displayRole = currentPerson?.position || m.role || '';
   return `
     <div class="member-block">
       <div class="member-row">
         ${avatarHtml(m.personnelId, m.name,'sm')}
         <span class="nm">${escapeHtml(m.name)}</span>
-        <span class="rl">${escapeHtml(m.role)}</span>
+        ${displayRole ? `<span class="rl">${escapeHtml(displayRole)}</span>` : ''}
         <div class="spacer"></div>
         ${doneGoals.length ? `
           <span class="done-icon-btn member-top-archive" data-toggle-donegoals="${key}" title="查看已完成目标" aria-label="查看已完成目标">
@@ -7932,7 +8156,9 @@ function bindPersonProjectSelect(pickerId, selectedProjectIds, attrName){
   if(modal) modal.addEventListener('click', (e)=>{ if(!picker.contains(e.target)) picker.classList.remove('open'); });
   refresh();
 }
-function openPersonDetailModal(personId){
+async function openPersonDetailModal(personId){
+  await studioFlushBeforeSwitch();
+  await studioPullRemoteIfChanged();
   const person = getPersonnel(personId);
   if(!person) return;
   if(!canManagePersonnel()){
@@ -7962,16 +8188,16 @@ function openPersonDetailModal(personId){
     <div class="field-row">
       <div class="field">
         <label class="field-label">联系方式</label>
-        <div class="person-detail-readonly">${escapeHtml(person.contact || '—')}</div>
+        <div class="person-detail-readonly" id="personDetailContactReadonly">${escapeHtml(person.contact || '—')}</div>
       </div>
       <div class="field">
         <label class="field-label">人员状态</label>
-        <div class="person-detail-readonly">${escapeHtml(person.status || '工作中')}</div>
+        <div class="person-detail-readonly" id="personDetailStatusReadonly">${escapeHtml(person.status || '工作中')}</div>
       </div>
     </div>
     <div class="field">
       <label class="field-label">个人标签</label>
-      <div class="person-detail-readonly">${tags.length ? tags.map(escapeHtml).join('、') : '—'}</div>
+      <div class="person-detail-readonly" id="personDetailTagsReadonly">${tags.length ? tags.map(escapeHtml).join('、') : '—'}</div>
     </div>
     <div class="field-row">
       <div class="field">
@@ -7991,6 +8217,8 @@ function openPersonDetailModal(personId){
       <button class="btn btn-primary" id="savePersonDetail">保存</button>
     </div>
   `, ()=>{
+    const detailModal = document.querySelector('#modalRoot .modal');
+    if(detailModal) detailModal.dataset.personDetailId = person.id;
     const avatarPreview = document.getElementById('personDetailAvatarPreview');
     const avatarFile = document.getElementById('personDetailAvatarFile');
     const renderAvatarPreview = ()=>{
@@ -8079,6 +8307,9 @@ function openPersonDetailModal(personId){
       if(name !== person.name) syncPersonName(person, name);
       person.position = position || '未设置';
       person.avatar = stagedAvatar;
+      state.projects.forEach(proj=>(proj.members||[]).forEach(m=>{
+        if(m.personnelId===person.id || (!m.personnelId && m.name===person.name)) m.role = person.position || '';
+      }));
 
       // 人员的项目归属统一在人员管理中维护。
       state.projects.filter(proj=>!proj.completed).forEach(proj=>{
@@ -8207,7 +8438,7 @@ function openAddPersonModal(){
       const id=normalizeAccountId(document.getElementById('newPersonId').value),name=nameInput.value.trim(),position=document.getElementById('newPersonPosition').value.trim(),isAdmin=!!document.getElementById('newPersonIsAdmin')?.checked,confirmBtn=document.getElementById('confirmNewPerson');
       if(!id){showToast('请输入人员 ID');return;}if(state.personnel.some(p=>String(p.id).toLowerCase()===id.toLowerCase())){showToast('这个人员 ID 已存在');return;}if(!name){showToast('请输入姓名');return;}
       const newPerson={id,name,position:position||'未设置',contact:'',status:'工作中',signature:'',tags:[],avatar:stagedAvatar,isAdmin};confirmBtn.disabled=true;confirmBtn.textContent='添加中…';
-      try{const cloud=await inviteMemberToWorkspace(id,isAdmin,newPerson,selectedProjectIds);state=cloud.data;writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();closeModal();renderPage();showToast(cloud.status==='joined'?'成员已加入团队':'邀请已保存，对方注册后会自动加入团队');}catch(e){showToast(e?.message||'邀请成员失败');confirmBtn.disabled=false;confirmBtn.textContent='添加';}
+      try{const cloud=await inviteMemberToWorkspace(id,isAdmin,newPerson,selectedProjectIds);state=await loadWorkspaceData(currentWorkspaceId)||cloud.data;writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();closeModal();renderPage();showToast(cloud.status==='joined'?'成员已加入团队':'邀请已保存，对方注册后会自动加入团队');}catch(e){showToast(e?.message||'邀请成员失败');confirmBtn.disabled=false;confirmBtn.textContent='添加';}
     };
     setTimeout(()=>document.getElementById('newPersonId')?.focus(),30);
   });
@@ -9045,7 +9276,7 @@ function openProjectMembersModal(pid){
               ${avatarHtml(m.personnelId, m.name,'sm')}
               <div class="member-info">
                 <span class="member-name">${escapeHtml(m.name)}</span>
-                <span class="member-role">${escapeHtml(m.role || '')}</span>
+                <span class="member-role">${escapeHtml((m.personnelId ? getPersonnel(m.personnelId)?.position : '') || m.role || '')}</span>
               </div>
               <button class="project-member-remove-action" data-modal-remove-member="${proj.id}|${m.id}">移除</button>
             </div>
@@ -9241,7 +9472,9 @@ function validateApplicationData(type,d){
 }
 function openApplicationModal(){
   let selectedType = '';
-  const defaultApprover = state.personnel.find(p=>p.id!==identity && p.isAdmin)?.id || state.personnel.find(p=>p.id!==identity)?.id || identity || '';
+  const applicantPerson = getPersonnel(identity);
+  const approverCandidates = state.personnel.filter(p=>p.id!==identity);
+  const defaultApprover = approverCandidates.find(p=>p.isAdmin)?.id || approverCandidates[0]?.id || '';
   openModal('发起申请', `
     <div class="application-type-picker">
       ${Object.entries(APPLICATION_TYPES).map(([key,m])=>`<button type="button" class="application-type-option" data-application-type="${key}">${escapeHtml(m.fullLabel)}</button>`).join('')}
@@ -9250,10 +9483,11 @@ function openApplicationModal(){
     <div id="applicationCommonFields" class="application-common-fields">
       <div class="field-row">
         <div class="field"><label class="field-label">申请人</label>
-          <select id="a_applicant">${state.personnel.map(p=>`<option value="${p.id}" ${identity===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}</select>
+          <div class="person-detail-readonly" id="a_applicant_display">${escapeHtml(applicantPerson?.name || identity || '当前账号')}</div>
+          <input type="hidden" id="a_applicant" value="${escapeHtml(identity || '')}">
         </div>
         <div class="field"><label class="field-label">审批人</label>
-          <select id="a_approver">${state.personnel.map(p=>`<option value="${p.id}" ${defaultApprover===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}</select>
+          <select id="a_approver" ${approverCandidates.length?'':'disabled'}>${approverCandidates.length ? approverCandidates.map(p=>`<option value="${p.id}" ${defaultApprover===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('') : '<option value="">暂无其他成员可审批</option>'}</select>
         </div>
       </div>
       <div class="application-modal-note">申请提交后会自动生成通知；只有审批人本人身份可以同意或拒绝。</div>
@@ -9280,7 +9514,8 @@ function openApplicationModal(){
       if(!selectedType) return;
       const applicant = document.getElementById('a_applicant').value;
       const approver = document.getElementById('a_approver').value;
-      if(!applicant || !approver){ showToast('请选择申请人和审批人'); return; }
+      if(!applicant || !approver){ showToast('请选择审批人'); return; }
+      if(applicant===approver){ showToast('审批人不能选择申请人本人'); return; }
       const data = collectApplicationData(selectedType);
       const error = validateApplicationData(selectedType,data);
       if(error){ showToast(error); return; }
@@ -9302,6 +9537,9 @@ function openApplicationModal(){
 function bindPageEvents(){
   const root = document.getElementById('pageRoot');
   if(!root) return;
+
+  // ---- 主页：工具长按排序 ----
+  bindDashboardToolSorting(root);
 
   // ---- 主页：工作室战略目标 ----
   root.querySelectorAll('[data-open-strategic-goals]').forEach(el=>{
