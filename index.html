@@ -5867,7 +5867,7 @@ input:focus,textarea:focus,select:focus,input[type=number]:focus,input[type=date
 
 
 <style id="dashboard-tool-longpress-sort-style">
-/* 主页工具：长按后进入排序状态；普通点击仍打开链接。 */
+/* 主页工具：左侧圆点是专用拖动把手；视觉尺寸不变，实际触控热区为 36×36px。 */
 .dashboard-tools-card .dashboard-tool-sortable .tool-chip{
   position:relative;
   user-select:none;
@@ -5875,15 +5875,82 @@ input:focus,textarea:focus,select:focus,input[type=number]:focus,input[type=date
   -webkit-touch-callout:none;
   transition:transform .14s ease, box-shadow .14s ease, opacity .14s ease;
 }
-.dashboard-tools-card .dashboard-tool-sortable .tool-chip.home-tool-dragging{
-  z-index:8;
-  cursor:grabbing;
-  transform:scale(1.025);
-  opacity:.92;
-  box-shadow:10px 10px 22px rgba(170,163,154,.30),-8px -8px 20px rgba(250,248,244,.72)!important;
+.dashboard-tools-card .dashboard-tool-sortable .home-tool-drag-handle{
+  position:relative;
+  flex:0 0 auto;
+  cursor:grab;
+  touch-action:none;
 }
+.dashboard-tools-card .dashboard-tool-sortable .home-tool-drag-handle::before{
+  content:"";
+  position:absolute;
+  width:36px;
+  height:36px;
+  left:50%;
+  top:50%;
+  transform:translate(-50%,-50%);
+  background:transparent;
+  border-radius:18px;
+}
+.dashboard-tools-card .dashboard-tool-sortable .tool-chip.home-tool-dragging{
+  cursor:grabbing;
+  opacity:.18;
+  transform:none;
+  box-shadow:var(--neo-shadow-inset-sm)!important;
+}
+.dashboard-tools-card .dashboard-tool-sortable .tool-chip.home-tool-dragging .home-tool-drag-handle{cursor:grabbing;}
 .dashboard-tools-card .dashboard-tool-sortable.home-tool-sorting .tool-chip:not(.home-tool-dragging){
   transition:transform .12s ease;
+}
+.home-tool-drag-ghost{
+  position:fixed!important;
+  z-index:99999!important;
+  margin:0!important;
+  pointer-events:none!important;
+  cursor:grabbing!important;
+  opacity:.97!important;
+  transform:scale(1.025)!important;
+  box-shadow:12px 14px 28px rgba(170,163,154,.34),-8px -8px 20px rgba(250,248,244,.74)!important;
+  transition:none!important;
+  will-change:left,top,transform;
+}
+</style>
+
+<style id="tool-category-title-direct-edit-v1">
+/* 仅工具管理分类标题：与具体工具行拉开层级；双击标题直接编辑。 */
+.tool-category-panel-head{
+  min-height:52px!important;
+  padding:9px 12px!important;
+  margin-bottom:10px!important;
+  border:1px solid rgba(248,246,242,.48)!important;
+  border-radius:18px!important;
+  background:#D6D0C4!important;
+  box-shadow:inset 3px 3px 8px rgba(167,160,151,.13), inset -3px -3px 8px rgba(250,248,244,.34)!important;
+}
+.tool-category-panel-title[data-tool-category-title]{
+  flex:1!important;
+  cursor:text!important;
+  user-select:none!important;
+  -webkit-user-select:none!important;
+}
+.tool-category-panel-title[data-tool-category-title]:hover{
+  color:#3F3F3C!important;
+}
+.tool-category-inline-edit{
+  display:flex!important;
+  align-items:center!important;
+  min-width:0!important;
+  flex:1!important;
+}
+.tool-category-inline-input{
+  width:100%!important;
+  height:34px!important;
+  min-width:0!important;
+  padding:0 12px!important;
+  border-radius:14px!important;
+  background:rgba(229,226,220,.72)!important;
+  color:var(--text-primary)!important;
+  box-shadow:inset 3px 3px 8px rgba(167,160,151,.16), inset -3px -3px 8px rgba(250,248,244,.42)!important;
 }
 </style>
 </head>
@@ -7613,8 +7680,8 @@ function pageDashboard(){
         <div class="dashboard-tools-card section">
           <div class="section-title"><span>工具链接</span><span class="count">${state.tools.length} 个</span></div>
           ${state.tools.length ? `<div class="tool-strip dashboard-tool-sortable">${dashboardOrderedTools().map(t=>`
-            <a class="tool-chip" data-home-tool-id="${escapeHtml(t.id)}" draggable="false" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer" title="长按拖动排序">
-              <span class="dotico"></span>${escapeHtml(t.name)}
+            <a class="tool-chip" data-home-tool-id="${escapeHtml(t.id)}" draggable="false" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer" title="拖动左侧圆点调整顺序">
+              <span class="dotico home-tool-drag-handle" aria-label="拖动调整顺序" title="拖动调整顺序"></span>${escapeHtml(t.name)}
             </a>`).join('')}</div>` : `<div class="empty">还没有添加工具，去「工具管理」添加吧</div>`}
         </div>
       </div>
@@ -7667,56 +7734,81 @@ function bindDashboardToolSorting(root){
   if(!strip) return;
   const items = [...strip.querySelectorAll('[data-home-tool-id]')];
   items.forEach(item=>{
+    const handle = item.querySelector('.home-tool-drag-handle');
+    if(!handle) return;
     item.addEventListener('click',e=>{
-      if(Date.now()<dashboardToolDragSuppressUntil){e.preventDefault();e.stopPropagation();}
+      if(e.target.closest('.home-tool-drag-handle') || Date.now()<dashboardToolDragSuppressUntil){
+        e.preventDefault();
+        e.stopPropagation();
+      }
     },true);
     item.addEventListener('dragstart',e=>e.preventDefault());
-    item.addEventListener('pointerdown',e=>{
+    handle.addEventListener('pointerdown',e=>{
       if(e.button!==undefined && e.button!==0) return;
-      const startX=e.clientX, startY=e.clientY;
-      let active=false, finished=false;
+      e.preventDefault();
+      e.stopPropagation();
       const pointerId=e.pointerId;
-      let pressTimer=setTimeout(()=>{
-        active=true;
-        item.classList.add('home-tool-dragging');
-        strip.classList.add('home-tool-sorting');
-        if(navigator.vibrate) try{navigator.vibrate(20);}catch(_e){}
-      },420);
+      let finished=false;
+      const startRect=item.getBoundingClientRect();
+      const offsetX=e.clientX-startRect.left;
+      const offsetY=e.clientY-startRect.top;
+      const ghost=item.cloneNode(true);
+      ghost.classList.remove('home-tool-dragging');
+      ghost.classList.add('home-tool-drag-ghost');
+      ghost.removeAttribute('href');
+      ghost.removeAttribute('target');
+      ghost.removeAttribute('rel');
+      ghost.style.width=`${startRect.width}px`;
+      ghost.style.height=`${startRect.height}px`;
+      ghost.style.left=`${startRect.left}px`;
+      ghost.style.top=`${startRect.top}px`;
+      (strip.closest('.dashboard-tools-card') || document.body).appendChild(ghost);
+
+      item.classList.add('home-tool-dragging');
+      strip.classList.add('home-tool-sorting');
+      if(handle.setPointerCapture){ try{handle.setPointerCapture(pointerId);}catch(_e){} }
+
+      const moveGhost=(clientX,clientY)=>{
+        ghost.style.left=`${clientX-offsetX}px`;
+        ghost.style.top=`${clientY-offsetY}px`;
+      };
       const cleanup=()=>{
-        clearTimeout(pressTimer);
         document.removeEventListener('pointermove',onMove,true);
         document.removeEventListener('pointerup',onUp,true);
         document.removeEventListener('pointercancel',onCancel,true);
+        ghost.remove();
+        if(handle.releasePointerCapture){ try{handle.releasePointerCapture(pointerId);}catch(_e){} }
       };
       const onMove=ev=>{
         if(ev.pointerId!==pointerId) return;
-        if(!active){
-          if(Math.hypot(ev.clientX-startX,ev.clientY-startY)>8){
-            clearTimeout(pressTimer);
-            pressTimer=0;
-          }
-          return;
-        }
         ev.preventDefault();
-        const target=document.elementFromPoint(ev.clientX,ev.clientY)?.closest?.('[data-home-tool-id]');
-        if(!target || target===item || target.parentElement!==strip) return;
-        const rect=target.getBoundingClientRect();
-        const before=ev.clientY < rect.top + rect.height/2;
-        strip.insertBefore(item,before?target:target.nextSibling);
+        moveGhost(ev.clientX,ev.clientY);
+        const others=[...strip.querySelectorAll('[data-home-tool-id]')].filter(el=>el!==item);
+        let placed=false;
+        for(const target of others){
+          const rect=target.getBoundingClientRect();
+          if(ev.clientY < rect.top + rect.height/2){
+            if(item.nextElementSibling!==target) strip.insertBefore(item,target);
+            placed=true;
+            break;
+          }
+        }
+        if(!placed && strip.lastElementChild!==item) strip.appendChild(item);
       };
       const finish=async(save)=>{
         if(finished) return;
         finished=true;
         cleanup();
-        if(!active) return;
-        active=false;
         item.classList.remove('home-tool-dragging');
         strip.classList.remove('home-tool-sorting');
-        dashboardToolDragSuppressUntil=Date.now()+500;
+        dashboardToolDragSuppressUntil=Date.now()+350;
         if(save){
-          state.homeToolOrder=[...strip.querySelectorAll('[data-home-tool-id]')].map(el=>el.dataset.homeToolId);
-          await saveData();
-          showToast('工具顺序已保存');
+          const nextOrder=[...strip.querySelectorAll('[data-home-tool-id]')].map(el=>el.dataset.homeToolId);
+          if(JSON.stringify(nextOrder)!==JSON.stringify(state.homeToolOrder)){
+            state.homeToolOrder=nextOrder;
+            await saveData();
+            showToast('工具顺序已保存');
+          }
         }else{
           renderPage();
         }
@@ -8602,13 +8694,7 @@ function pageTools(){
         <section class="tool-category-panel">
           <div class="tool-category-panel-head">
             <span class="tool-category-avatar">${escapeHtml((category ? category.name : '未分类').trim().slice(0,1) || '工')}</span>
-            <div class="tool-category-panel-title">${category ? escapeHtml(category.name) : '未分类'}</div>
-            ${category ? `
-              <div class="tool-category-panel-actions">
-                <button type="button" class="tool-board-action" data-edit-tool-category="${category.id}">编辑</button>
-                <button type="button" class="tool-board-action danger" data-del-tool-category="${category.id}">删除</button>
-              </div>
-            ` : ''}
+            <div class="tool-category-panel-title"${category ? ` data-tool-category-title="${category.id}" title="双击修改分类标题"` : ''}>${category ? escapeHtml(category.name) : '未分类'}</div>
           </div>
           <div class="tool-category-panel-list">
             ${tools.map((tool,index)=>renderToolRow(tool,index)).join('')}
@@ -10235,55 +10321,58 @@ function bindPageEvents(){
   const btnAddTool = document.getElementById('btnAddTool');
   if(btnAddTool) btnAddTool.onclick = ()=>openToolEditorModal(null);
 
-  root.querySelectorAll('[data-edit-tool-category]').forEach(el=>{
-    el.onclick = (e)=>{
+  root.querySelectorAll('[data-tool-category-title]').forEach(title=>{
+    title.ondblclick = (e)=>{
       e.preventDefault();
       e.stopPropagation();
-      const category = state.toolCategories.find(c=>c.id===el.dataset.editToolCategory);
+      const category = state.toolCategories.find(c=>c.id===title.dataset.toolCategoryTitle);
       if(!category) return;
-      const head = el.closest('.tool-category-panel-head');
-      const title = head && head.querySelector('.tool-category-panel-title');
-      const actions = head && head.querySelector('.tool-category-panel-actions');
-      if(!head || !title || head.querySelector('.tool-category-inline-edit')) return;
+      const head = title.closest('.tool-category-panel-head');
+      if(!head || head.querySelector('.tool-category-inline-edit')) return;
 
       const oldName = category.name;
       title.style.display = 'none';
-      if(actions) actions.style.display = 'none';
 
       const editor = document.createElement('div');
       editor.className = 'tool-category-inline-edit';
-      editor.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;flex:1;';
-      editor.innerHTML = `
-        <input type="text" class="tool-category-inline-input" value="${escapeHtml(oldName)}" style="height:34px;min-width:0;flex:1;border-radius:17px;padding:0 12px;">
-        <button type="button" class="tool-board-action" data-inline-save>保存</button>
-        <button type="button" class="tool-board-action" data-inline-cancel>取消</button>
-      `;
+      editor.innerHTML = `<input type="text" class="tool-category-inline-input" value="${escapeHtml(oldName)}" aria-label="分类标题">`;
       head.appendChild(editor);
 
       const input = editor.querySelector('.tool-category-inline-input');
+      let settled = false;
       const restore = ()=>{
+        if(settled) return;
+        settled = true;
         editor.remove();
         title.style.display = '';
-        if(actions) actions.style.display = '';
       };
       const submit = async ()=>{
+        if(settled) return;
         const name = input.value.trim();
-        if(!name){ showToast('请输入分类名称'); return; }
-        if(state.toolCategories.some(c=>c.id!==category.id && c.name.toLowerCase()===name.toLowerCase())){
-          showToast('这个分类已经存在');
+        if(!name){
+          showToast('请输入分类名称');
+          input.focus();
           return;
         }
+        if(state.toolCategories.some(c=>c.id!==category.id && c.name.toLowerCase()===name.toLowerCase())){
+          showToast('这个分类已经存在');
+          input.focus();
+          input.select();
+          return;
+        }
+        settled = true;
         category.name = name;
+        editor.remove();
+        title.style.display = '';
         await saveData();
         renderPage();
         showToast('分类名称已更新');
       };
-      editor.querySelector('[data-inline-save]').onclick = submit;
-      editor.querySelector('[data-inline-cancel]').onclick = restore;
       input.onkeydown = (evt)=>{
-        if(evt.key==='Enter') submit();
-        if(evt.key==='Escape') restore();
+        if(evt.key==='Enter'){ evt.preventDefault(); submit(); }
+        if(evt.key==='Escape'){ evt.preventDefault(); restore(); }
       };
+      input.onblur = ()=>{ submit(); };
       setTimeout(()=>{ input.focus(); input.select(); },0);
     };
   });
