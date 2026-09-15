@@ -6175,13 +6175,40 @@ function studioMergeThreeWay(latest,base,next){
 let studioAuthSession=null;
 function loadStoredAuthSession(){
   try{
+    // 当前标签页优先使用自己的会话；新标签页/重新打开浏览器时，再回退到长期保存的会话。
     let raw=sessionStorage.getItem(AUTH_SESSION_LOCAL_KEY);
-    if(!raw){raw=localStorage.getItem(AUTH_SESSION_LOCAL_KEY);if(raw){sessionStorage.setItem(AUTH_SESSION_LOCAL_KEY,raw);localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);}}
+    if(!raw){
+      raw=localStorage.getItem(AUTH_SESSION_LOCAL_KEY);
+      if(raw) sessionStorage.setItem(AUTH_SESSION_LOCAL_KEY,raw);
+    }
     studioAuthSession=raw?JSON.parse(raw):null;
   }catch(e){studioAuthSession=null;}
   return studioAuthSession;
 }
-function persistAuthSession(session){studioAuthSession=session||null;try{if(studioAuthSession)sessionStorage.setItem(AUTH_SESSION_LOCAL_KEY,JSON.stringify(studioAuthSession));else sessionStorage.removeItem(AUTH_SESSION_LOCAL_KEY);localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);}catch(e){}}
+function persistAuthSession(session){
+  const previousSession=studioAuthSession;
+  studioAuthSession=session||null;
+  try{
+    if(studioAuthSession){
+      const raw=JSON.stringify(studioAuthSession);
+      // sessionStorage 保证已打开的不同标签页可继续保持各自账号；
+      // localStorage 作为浏览器关闭后的长期登录恢复凭证。
+      sessionStorage.setItem(AUTH_SESSION_LOCAL_KEY,raw);
+      localStorage.setItem(AUTH_SESSION_LOCAL_KEY,raw);
+    }else{
+      sessionStorage.removeItem(AUTH_SESSION_LOCAL_KEY);
+      // 只清理属于当前标签页原账号的长期凭证，避免误删另一标签页刚登录的账号。
+      const storedRaw=localStorage.getItem(AUTH_SESSION_LOCAL_KEY);
+      if(storedRaw){
+        let stored=null;
+        try{stored=JSON.parse(storedRaw);}catch(_e){}
+        const sameUser=previousSession?.user_id&&stored?.user_id&&previousSession.user_id===stored.user_id;
+        const sameRefresh=previousSession?.refresh_token&&stored?.refresh_token&&previousSession.refresh_token===stored.refresh_token;
+        if(sameUser||sameRefresh) localStorage.removeItem(AUTH_SESSION_LOCAL_KEY);
+      }
+    }
+  }catch(e){}
+}
 async function studioAuthRefresh(){if(!studioAuthSession?.refresh_token)throw new Error('登录已过期，请重新登录');const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({refresh_token:studioAuthSession.refresh_token}),cache:'no-store'});const data=await res.json().catch(()=>({}));if(!res.ok||!data?.access_token){persistAuthSession(null);throw new Error(data?.error_description||data?.msg||'登录已过期，请重新登录');}persistAuthSession({access_token:data.access_token,refresh_token:data.refresh_token||studioAuthSession.refresh_token,expires_at:Date.now()+Math.max(60,Number(data.expires_in)||3600)*1000,user_id:data.user?.id||studioAuthSession.user_id||null});return studioAuthSession;}
 async function ensureStudioAuthSession(){if(!studioAuthSession)loadStoredAuthSession();if(!studioAuthSession?.access_token)throw new Error('请先登录');if(studioAuthSession.expires_at&&Date.now()>studioAuthSession.expires_at-30000)await studioAuthRefresh();return studioAuthSession;}
 async function studioCloud(action,payload={},options={}){const needsAuth=options.auth!==false;if(needsAuth)await ensureStudioAuthSession();const request=async()=>{const headers={'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY};if(needsAuth&&studioAuthSession?.access_token)headers.Authorization=`Bearer ${studioAuthSession.access_token}`;return fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`,{method:'POST',headers,cache:'no-store',body:JSON.stringify({action,...payload})});};let res=await request();if(needsAuth&&res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}const data=await res.json().catch(()=>({}));if(!res.ok||data?.error)throw new Error(data?.error||`云端请求失败（${res.status}）`);return data;}
