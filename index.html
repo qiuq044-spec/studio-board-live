@@ -6129,11 +6129,44 @@ const WORKSPACE_LOCAL_PREFIX = 'studio-workspace-local-v3:';
 const IDENTITY_LOCAL_KEY = 'studio-current-identity';
 const AUTH_SESSION_LOCAL_KEY = 'studio-supabase-auth-v3';
 const STUDIO_WORKSPACE_SYNC_FUNCTION = 'studio-workspace-sync-v4';
+const STUDIO_WORKSPACE_HEAD_FUNCTION = 'studio-workspace-head-v1';
+const STUDIO_DATA_SYNC_FUNCTION = 'studio-data-sync-v5';
+const AUTH_EMAIL_CACHE_KEY = 'studio-auth-email-cache-v1';
 function normalizeAccountId(id){ return String(id || '').trim().toLowerCase(); }
+function readAuthEmailCache(id){try{const map=JSON.parse(localStorage.getItem(AUTH_EMAIL_CACHE_KEY)||'{}');return map[normalizeAccountId(id)]||'';}catch(e){return '';}}
+function writeAuthEmailCache(id,email){try{const map=JSON.parse(localStorage.getItem(AUTH_EMAIL_CACHE_KEY)||'{}');map[normalizeAccountId(id)]=String(email||'');localStorage.setItem(AUTH_EMAIL_CACHE_KEY,JSON.stringify(map));}catch(e){}}
+function enrichStoredSession(info){if(!studioAuthSession||!info)return;persistAuthSession({...studioAuthSession,workspace_id:info.workspaceId||studioAuthSession.workspace_id||null,login_id:info.loginId||studioAuthSession.login_id||null,workspace_type:info.workspaceType||studioAuthSession.workspace_type||null,is_admin:typeof info.isAdmin==='boolean'?info.isAdmin:studioAuthSession.is_admin,must_change_password:typeof info.mustChangePassword==='boolean'?info.mustChangePassword:studioAuthSession.must_change_password});}
 function workspaceLocalKey(workspaceId){ return `${WORKSPACE_LOCAL_PREFIX}${workspaceId}`; }
-function readLocalWorkspace(workspaceId){try{const raw=localStorage.getItem(workspaceLocalKey(workspaceId));if(!raw)return null;const parsed=JSON.parse(raw);return parsed&&parsed.data?parsed.data:parsed;}catch(e){return null;}}
-function writeLocalWorkspaceJson(workspaceId,dataJson){try{localStorage.setItem(workspaceLocalKey(workspaceId),`{"savedAt":${Date.now()},"data":${dataJson}}`);return true;}catch(e){return false;}}
-function writeLocalWorkspace(workspaceId,data){try{return writeLocalWorkspaceJson(workspaceId,JSON.stringify(data));}catch(e){return false;}}
+const STUDIO_CACHE_DB='studio-runtime-v5',STUDIO_CACHE_VERSION=1;
+const studioWorkspaceMemoryCache=new Map();
+let studioCacheDbPromise=null;
+function studioOpenCacheDb(){
+  if(studioCacheDbPromise)return studioCacheDbPromise;
+  studioCacheDbPromise=new Promise((resolve,reject)=>{
+    const req=indexedDB.open(STUDIO_CACHE_DB,STUDIO_CACHE_VERSION);
+    req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');};
+    req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+  });
+  return studioCacheDbPromise;
+}
+async function studioCacheGet(key){try{const db=await studioOpenCacheDb();return await new Promise((resolve,reject)=>{const tx=db.transaction('kv','readonly'),r=tx.objectStore('kv').get(key);r.onsuccess=()=>resolve(r.result??null);r.onerror=()=>reject(r.error);});}catch(e){return null;}}
+async function studioCacheSet(key,value){try{const db=await studioOpenCacheDb();await new Promise((resolve,reject)=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(value,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});return true;}catch(e){console.warn('IndexedDB 写入失败',e);return false;}}
+async function studioCacheDel(key){try{const db=await studioOpenCacheDb();await new Promise((resolve,reject)=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').delete(key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});}catch(e){}}
+function readLocalWorkspace(workspaceId){
+  if(studioWorkspaceMemoryCache.has(workspaceId))return studioWorkspaceMemoryCache.get(workspaceId);
+  try{const raw=localStorage.getItem(workspaceLocalKey(workspaceId));if(!raw)return null;const parsed=JSON.parse(raw);const data=parsed&&parsed.data?parsed.data:parsed;if(data)studioWorkspaceMemoryCache.set(workspaceId,data);return data;}catch(e){return null;}
+}
+async function studioReadWorkspaceCache(workspaceId){
+  if(!workspaceId)return null;
+  if(studioWorkspaceMemoryCache.has(workspaceId))return studioWorkspaceMemoryCache.get(workspaceId);
+  const cached=await studioCacheGet(`workspace:${workspaceId}`);
+  if(cached?.data){studioWorkspaceMemoryCache.set(workspaceId,cached.data);return cached.data;}
+  const legacy=readLocalWorkspace(workspaceId);
+  if(legacy){studioWorkspaceMemoryCache.set(workspaceId,legacy);studioCacheSet(`workspace:${workspaceId}`,{savedAt:Date.now(),data:legacy});try{localStorage.removeItem(workspaceLocalKey(workspaceId));}catch(e){}return legacy;}
+  return null;
+}
+function writeLocalWorkspaceJson(workspaceId,dataJson){try{const data=JSON.parse(dataJson);studioWorkspaceMemoryCache.set(workspaceId,data);studioCacheSet(`workspace:${workspaceId}`,{savedAt:Date.now(),data});try{localStorage.removeItem(workspaceLocalKey(workspaceId));}catch(e){}return true;}catch(e){return false;}}
+function writeLocalWorkspace(workspaceId,data){if(!workspaceId||!data)return false;studioWorkspaceMemoryCache.set(workspaceId,data);studioCacheSet(`workspace:${workspaceId}`,{savedAt:Date.now(),data:studioClone(data)});try{localStorage.removeItem(workspaceLocalKey(workspaceId));}catch(e){}return true;}
 function studioClone(v){return v===undefined?v:JSON.parse(JSON.stringify(v));}
 function studioSame(a,b){try{return JSON.stringify(a)===JSON.stringify(b);}catch(e){return false;}}
 function studioIsObj(v){return v!==null&&typeof v==='object'&&!Array.isArray(v);}
@@ -6209,15 +6242,34 @@ function persistAuthSession(session){
     }
   }catch(e){}
 }
-async function studioAuthRefresh(){if(!studioAuthSession?.refresh_token)throw new Error('登录已过期，请重新登录');const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({refresh_token:studioAuthSession.refresh_token}),cache:'no-store'});const data=await res.json().catch(()=>({}));if(!res.ok||!data?.access_token){persistAuthSession(null);throw new Error(data?.error_description||data?.msg||'登录已过期，请重新登录');}persistAuthSession({access_token:data.access_token,refresh_token:data.refresh_token||studioAuthSession.refresh_token,expires_at:Date.now()+Math.max(60,Number(data.expires_in)||3600)*1000,user_id:data.user?.id||studioAuthSession.user_id||null});return studioAuthSession;}
+async function studioAuthRefresh(){if(!studioAuthSession?.refresh_token)throw new Error('登录已过期，请重新登录');const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({refresh_token:studioAuthSession.refresh_token}),cache:'no-store'});const data=await res.json().catch(()=>({}));if(!res.ok||!data?.access_token){persistAuthSession(null);throw new Error(data?.error_description||data?.msg||'登录已过期，请重新登录');}persistAuthSession({...studioAuthSession,access_token:data.access_token,refresh_token:data.refresh_token||studioAuthSession.refresh_token,expires_at:Date.now()+Math.max(60,Number(data.expires_in)||3600)*1000,user_id:data.user?.id||studioAuthSession.user_id||null});return studioAuthSession;}
 async function ensureStudioAuthSession(){if(!studioAuthSession)loadStoredAuthSession();if(!studioAuthSession?.access_token)throw new Error('请先登录');if(studioAuthSession.expires_at&&Date.now()>studioAuthSession.expires_at-30000)await studioAuthRefresh();return studioAuthSession;}
 async function studioCloud(action,payload={},options={}){const needsAuth=options.auth!==false;if(needsAuth)await ensureStudioAuthSession();const request=async()=>{const headers={'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY};if(needsAuth&&studioAuthSession?.access_token)headers.Authorization=`Bearer ${studioAuthSession.access_token}`;return fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_SYNC_FUNCTION}`,{method:'POST',headers,cache:'no-store',body:JSON.stringify({action,...payload})});};let res=await request();if(needsAuth&&res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}const data=await res.json().catch(()=>({}));if(!res.ok||data?.error)throw new Error(data?.error||`云端请求失败（${res.status}）`);return data;}
 async function studioWorkspaceCloud(action,payload={}){await ensureStudioAuthSession();const request=async()=>fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_WORKSPACE_SYNC_FUNCTION}`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`},cache:'no-store',body:JSON.stringify({action,...payload})});let res=await request();if(res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}const data=await res.json().catch(()=>({}));if(!res.ok||data?.error)throw new Error(data?.error||`同步请求失败（${res.status}）`);return data;}
-async function studioLoginByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const resolved=await studioCloud('resolve_login',{loginId:id},{auth:false});const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('ID 或密码错误');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});return await studioCloud('session');}
-async function studioRegisterByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const created=await studioCloud('register',{loginId:id,password},{auth:false});const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:created.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('注册成功，但自动登录失败，请重新登录');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});const info=await studioCloud('session');return {...info,joinedTeam:!!created.joinedTeam,workspaceType:created.workspaceType};}
-async function studioRestoreSession(){loadStoredAuthSession();if(!studioAuthSession?.access_token)return null;try{return await studioCloud('session');}catch(e){persistAuthSession(null);return null;}}
+async function studioDataCloud(action,payload={},options={}){
+  const needsAuth=options.auth!==false;if(needsAuth)await ensureStudioAuthSession();
+  const request=async()=>{const headers={'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY};if(needsAuth&&studioAuthSession?.access_token)headers.Authorization=`Bearer ${studioAuthSession.access_token}`;return fetch(`${STUDIO_SUPABASE_URL}/functions/v1/${STUDIO_DATA_SYNC_FUNCTION}`,{method:'POST',headers,cache:'no-store',body:JSON.stringify({action,...payload})});};
+  let res=await request();if(needsAuth&&res.status===401&&studioAuthSession?.refresh_token){await studioAuthRefresh();res=await request();}
+  const data=await res.json().catch(()=>({}));if(!res.ok||data?.error){const err=new Error(data?.error||`数据同步失败（${res.status}）`);err.status=res.status;throw err;}return data;
+}
+
+async function studioLoginByIdPassword(loginId,password){
+  const id=normalizeAccountId(loginId);
+  const info=await studioDataCloud('login',{loginId:id,password},{auth:false});
+  persistAuthSession({access_token:info.access_token,refresh_token:info.refresh_token,expires_at:Date.now()+Math.max(60,Number(info.expires_in)||3600)*1000,user_id:info.user_id||null});
+  enrichStoredSession(info);
+  if(info.data)writeLocalWorkspace(info.workspaceId,info.data);
+  return info;
+}
+async function studioRegisterByIdPassword(loginId,password){const id=normalizeAccountId(loginId);const created=await studioCloud('register',{loginId:id,password},{auth:false});writeAuthEmailCache(id,created.authEmail);const res=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:created.authEmail,password}),cache:'no-store'});const auth=await res.json().catch(()=>({}));if(!res.ok||!auth?.access_token)throw new Error('注册成功，但自动登录失败，请重新登录');persistAuthSession({access_token:auth.access_token,refresh_token:auth.refresh_token,expires_at:Date.now()+Math.max(60,Number(auth.expires_in)||3600)*1000,user_id:auth.user?.id||null});const boot=await studioDataCloud('bootstrap',{});const snap=await studioDataCloud('snapshot',{workspaceId:boot.workspaceId});const info={...boot,data:snap.data};enrichStoredSession(info);if(info.data)writeLocalWorkspace(info.workspaceId,info.data);return {...info,joinedTeam:!!created.joinedTeam,workspaceType:created.workspaceType||info.workspaceType};}
+async function studioRestoreSession(){
+  loadStoredAuthSession();if(!studioAuthSession?.access_token)return null;
+  const wid=studioAuthSession.workspace_id||'',loginId=studioAuthSession.login_id||'';
+  if(wid&&loginId){const local=await studioReadWorkspaceCache(wid);if(local)return {ok:true,workspaceId:wid,loginId,data:local,workspaceType:studioAuthSession.workspace_type||'team',isAdmin:!!studioAuthSession.is_admin,mustChangePassword:!!studioAuthSession.must_change_password,fromCache:true};}
+  try{const info=await studioDataCloud('bootstrap',{});enrichStoredSession(info);const snap=await studioDataCloud('snapshot',{workspaceId:info.workspaceId});return {...info,data:snap.data};}catch(e){persistAuthSession(null);return null;}
+}
 async function studioAuthSignOut(){stopWorkspaceLiveSync();try{if(studioAuthSession?.access_token)await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/logout?scope=local`,{method:'POST',headers:{'apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`}});}catch(e){}persistAuthSession(null);}
-async function studioChangePassword(currentPassword,newPassword){if(!identity)throw new Error('请先登录');const resolved=await studioCloud('resolve_login',{loginId:identity},{auth:false});const verify=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password:currentPassword}),cache:'no-store'});const verified=await verify.json().catch(()=>({}));if(!verify.ok||!verified?.access_token)throw new Error('当前密码不正确');persistAuthSession({access_token:verified.access_token,refresh_token:verified.refresh_token,expires_at:Date.now()+Math.max(60,Number(verified.expires_in)||3600)*1000,user_id:verified.user?.id||null});const update=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/user`,{method:'PUT',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`},body:JSON.stringify({password:newPassword}),cache:'no-store'});const updated=await update.json().catch(()=>({}));if(!update.ok||updated?.error)throw new Error(updated?.msg||updated?.error_description||updated?.error||'修改密码失败');await studioCloud('mark_password_changed');return true;}
+async function studioChangePassword(currentPassword,newPassword){if(!identity)throw new Error('请先登录');const resolved=await studioCloud('resolve_login',{loginId:identity},{auth:false});const verify=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`,{method:'POST',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({email:resolved.authEmail,password:currentPassword}),cache:'no-store'});const verified=await verify.json().catch(()=>({}));if(!verify.ok||!verified?.access_token)throw new Error('当前密码不正确');persistAuthSession({...studioAuthSession,access_token:verified.access_token,refresh_token:verified.refresh_token,expires_at:Date.now()+Math.max(60,Number(verified.expires_in)||3600)*1000,user_id:verified.user?.id||studioAuthSession?.user_id||null});const update=await fetch(`${STUDIO_SUPABASE_URL}/auth/v1/user`,{method:'PUT',headers:{'Content-Type':'application/json','apikey':STUDIO_SUPABASE_PUBLISHABLE_KEY,'Authorization':`Bearer ${studioAuthSession.access_token}`},body:JSON.stringify({password:newPassword}),cache:'no-store'});const updated=await update.json().catch(()=>({}));if(!update.ok||updated?.error)throw new Error(updated?.msg||updated?.error_description||updated?.error||'修改密码失败');await studioCloud('mark_password_changed');return true;}
 let studioBaselineData=null,studioBaselineUpdatedAt=null;
 function studioSetBaseline(data,updatedAt){studioBaselineData=data?studioClone(data):null;studioBaselineUpdatedAt=updatedAt||null;}
 let studioPendingSave=null,studioSaveTimer=null,studioSaveInFlight=false,studioSaveRetryTimer=null;
@@ -6257,14 +6309,122 @@ async function studioFlushWorkspaceSave(){
     if(studioPendingSave&&!studioSaveRetryTimer){clearTimeout(studioSaveTimer);studioSaveTimer=setTimeout(()=>{studioSaveTimer=null;studioFlushWorkspaceSave();},50);}
   }
 }
-async function studioFlushBeforeSwitch(){clearTimeout(studioSaveTimer);studioSaveTimer=null;const deadline=Date.now()+5000;while((studioPendingSave||studioSaveInFlight)&&Date.now()<deadline){if(!studioSaveInFlight&&studioPendingSave)await studioFlushWorkspaceSave();if(studioSaveInFlight)await new Promise(r=>setTimeout(r,40));}}
+async function studioFlushBeforeSwitch(){
+  await studioPersistStructuredQueue();
+  studioScheduleStructuredFlush(0);
+  const deadline=Date.now()+1800;while((studioStructuredQueue.length||studioStructuredInFlight)&&Date.now()<deadline){await new Promise(r=>setTimeout(r,30));}
+}
+function studioApplyGoalMutationToData(data,op,projectId,memberId,goalId,changes={},unset=[],goalPayload=null){if(!data)return;const proj=(data.projects||[]).find(p=>String(p.id)===String(projectId));const member=proj&&(proj.members||[]).find(m=>String(m.id)===String(memberId));if(!member)return;if(!Array.isArray(member.goals))member.goals=[];if(op==='create'){if(goalPayload&&!member.goals.some(g=>String(g.id)===String(goalId)))member.goals.push(studioClone(goalPayload));return;}if(op==='delete'){member.goals=member.goals.filter(g=>String(g.id)!==String(goalId));return;}const goal=member.goals.find(g=>String(g.id)===String(goalId));if(!goal)return;Object.entries(changes||{}).forEach(([k,v])=>{goal[k]=studioClone(v);});(unset||[]).forEach(k=>delete goal[k]);}
+
+const studioClientId=(()=>{try{let v=sessionStorage.getItem('studio-client-v5');if(!v){v=(crypto.randomUUID?crypto.randomUUID():`c_${Date.now()}_${Math.random().toString(36).slice(2)}`);sessionStorage.setItem('studio-client-v5',v);}return v;}catch(e){return `c_${Date.now()}_${Math.random().toString(36).slice(2)}`;}})();
+let studioStructuredQueue=[],studioStructuredInFlight=false,studioStructuredFlushTimer=null;
+function studioObjectPatch(base,next,exclude=[]){
+  const b=base&&typeof base==='object'?base:{},n=next&&typeof next==='object'?next:{};const ex=new Set(exclude),data={},unset=[];let changed=false;
+  for(const k of new Set([...Object.keys(b),...Object.keys(n)])){if(ex.has(k))continue;const hb=Object.prototype.hasOwnProperty.call(b,k),hn=Object.prototype.hasOwnProperty.call(n,k);if(hb&&!hn){unset.push(k);changed=true;continue;}if(!hb&&hn){data[k]=studioClone(n[k]);changed=true;continue;}if(!studioSame(b[k],n[k])){data[k]=studioClone(n[k]);changed=true;}}
+  return {data,unset,changed};
+}
+function studioMapById(arr){const m=new Map();(Array.isArray(arr)?arr:[]).forEach((x,i)=>{if(x?.id!=null)m.set(String(x.id),{x,i});});return m;}
+function studioDiffEntityArray(changes,entity,baseArr,nextArr,idKey,extraKeys={},exclude=[]){
+  const b=studioMapById(baseArr),n=studioMapById(nextArr);
+  for(const [id,bv] of b)if(!n.has(id))changes.push({entity,op:'delete',[idKey]:id,...extraKeys});
+  for(const [id,nv] of n){const bv=b.get(id);if(!bv){changes.push({entity,op:'upsert',[idKey]:id,...extraKeys,data:studioClone(nv.x),sortOrder:nv.i});continue;}const p=studioObjectPatch(bv.x,nv.x,exclude);if(p.changed||bv.i!==nv.i)changes.push({entity,op:'upsert',[idKey]:id,...extraKeys,data:p.data,unset:p.unset,sortOrder:nv.i});}
+}
+function studioDiffState(base,next){
+  const changes=[];base=base||seedData();next=next||seedData();
+  const topExclude=['personnel','projects','toolCategories','tools','strategicGoals','strategicGoalArchives','notifications','collaborations'];
+  const sp=studioObjectPatch(base,next,topExclude);if(sp.changed)changes.push({entity:'settings',op:'upsert',data:sp.data,unset:sp.unset});
+  studioDiffEntityArray(changes,'personnel',base.personnel,next.personnel,'personId',{},[]);
+  studioDiffEntityArray(changes,'project',base.projects,next.projects,'projectId',{},['members']);
+  const bp=studioMapById(base.projects),np=studioMapById(next.projects);
+  for(const [pid,pn] of np){const pb=bp.get(pid)?.x||{members:[]};const bm=studioMapById(pb.members),nm=studioMapById(pn.x.members);
+    for(const [mid,mv] of bm)if(!nm.has(mid))changes.push({entity:'member',op:'delete',projectId:pid,memberId:mid});
+    for(const [mid,mn] of nm){const mb=bm.get(mid);if(!mb){changes.push({entity:'member',op:'upsert',projectId:pid,memberId:mid,data:studioClone(mn.x),sortOrder:mn.i});(mn.x.goals||[]).forEach((g,i)=>changes.push({entity:'task',op:'upsert',projectId:pid,memberId:mid,taskId:String(g.id),data:studioClone(g),sortOrder:i}));continue;}const mp=studioObjectPatch(mb.x,mn.x,['goals']);if(mp.changed||mb.i!==mn.i)changes.push({entity:'member',op:'upsert',projectId:pid,memberId:mid,data:mp.data,unset:mp.unset,sortOrder:mn.i});studioDiffEntityArray(changes,'task',mb.x.goals,mn.x.goals,'taskId',{projectId:pid,memberId:mid},[]);}
+  }
+  studioDiffEntityArray(changes,'category',base.toolCategories,next.toolCategories,'categoryId',{},[]);
+  studioDiffEntityArray(changes,'tool',base.tools,next.tools,'toolId',{},[]);
+  studioDiffEntityArray(changes,'strategic',base.strategicGoals,next.strategicGoals,'goalId',{},[]);
+  studioDiffEntityArray(changes,'archive',base.strategicGoalArchives,next.strategicGoalArchives,'archiveId',{},[]);
+  studioDiffEntityArray(changes,'notification',base.notifications,next.notifications,'notificationId',{},[]);
+  studioDiffEntityArray(changes,'collaboration',base.collaborations,next.collaborations,'collaborationId',{},[]);
+  return changes;
+}
+async function studioPersistStructuredQueue(){if(!currentWorkspaceId)return false;return studioCacheSet(`queue:${currentWorkspaceId}`,studioStructuredQueue);}
+async function studioLoadStructuredQueue(workspaceId){
+  const q=await studioCacheGet(`queue:${workspaceId}`);studioStructuredQueue=Array.isArray(q)?q:[];
+  if(!studioStructuredQueue.length){
+    try{const legacyRaw=localStorage.getItem(`studio-goal-queue-v1:${workspaceId}`),legacy=legacyRaw?JSON.parse(legacyRaw):[];if(Array.isArray(legacy)&&legacy.length){
+      studioStructuredQueue=legacy.map(j=>{const p=j.payload||{};const data=j.goalPayload?studioClone(j.goalPayload):studioClone(j.changes||{});return {id:crypto.randomUUID?crypto.randomUUID():`q_${Date.now()}_${Math.random()}`,workspaceId,changes:[{entity:'task',op:j.op==='delete'?'delete':'upsert',projectId:j.projectId||p.projectId,memberId:j.memberId||p.memberId,taskId:j.goalId||p.goalId,data,unset:[...(j.unset||p.unset||[])]}],attempts:0,createdAt:Date.now()};});
+      await studioPersistStructuredQueue();localStorage.removeItem(`studio-goal-queue-v1:${workspaceId}`);
+    }}catch(e){console.warn('旧任务队列迁移失败',e);}
+  }
+  return studioStructuredQueue;
+}
+function studioScheduleStructuredFlush(delay=0){clearTimeout(studioStructuredFlushTimer);studioStructuredFlushTimer=setTimeout(()=>studioFlushStructuredQueue(),delay);}
+async function studioEnqueueChangesInternal(changes){if(!changes?.length)return true;studioStructuredQueue.push({id:crypto.randomUUID?crypto.randomUUID():`q_${Date.now()}_${Math.random()}`,workspaceId:currentWorkspaceId,changes:studioClone(changes),attempts:0,createdAt:Date.now()});await studioPersistStructuredQueue();studioScheduleStructuredFlush(0);return true;}
+function studioEnqueueStructuredChanges(changes){studioEnqueueChangesInternal(changes);return true;}
+async function studioFlushStructuredQueue(){
+  if(studioStructuredInFlight||!studioStructuredQueue.length||!currentWorkspaceId||!studioAuthSession?.access_token)return;studioStructuredInFlight=true;const job=studioStructuredQueue[0];
+  try{await studioDataCloud('apply_changes',{workspaceId:job.workspaceId,clientId:studioClientId,changes:job.changes});studioStructuredQueue.shift();await studioPersistStructuredQueue();}
+  catch(e){job.attempts=(job.attempts||0)+1;await studioPersistStructuredQueue();console.warn('后台同步失败，将重试',e);if(job.attempts===1)showToast('修改已保存在本地，网络恢复后会自动同步');}
+  finally{studioStructuredInFlight=false;if(studioStructuredQueue.length)studioScheduleStructuredFlush(studioStructuredQueue[0].attempts?Math.min(6000,800*studioStructuredQueue[0].attempts):20);else studioScheduleRemoteRefresh(80);}
+}
+async function studioSaveStructuredState(workspaceId,data){
+  if(!workspaceId||!data)return false;const base=studioBaselineData?studioClone(studioBaselineData):seedData();const next=studioClone(data);const changes=studioDiffState(base,next);studioSetBaseline(next,null);writeLocalWorkspace(workspaceId,next);if(changes.length)await studioEnqueueChangesInternal(changes);return true;
+}
+const STUDIO_GOAL_QUEUE_KEY_PREFIX='studio-goal-queue-v1:';
+let studioGoalMutationQueue=[],studioGoalMutationInFlight=false,studioGoalMutationRetryTimer=null;
+function studioGoalQueueKey(workspaceId){return `${STUDIO_GOAL_QUEUE_KEY_PREFIX}${workspaceId||''}`;}
+function studioPersistGoalQueue(){if(!currentWorkspaceId)return;try{localStorage.setItem(studioGoalQueueKey(currentWorkspaceId),JSON.stringify(studioGoalMutationQueue));}catch(e){console.warn('待同步任务队列写入失败',e);}}
+function studioLoadGoalQueue(workspaceId){try{const raw=localStorage.getItem(studioGoalQueueKey(workspaceId));const arr=raw?JSON.parse(raw):[];studioGoalMutationQueue=Array.isArray(arr)?arr:[];}catch(e){studioGoalMutationQueue=[];}return studioGoalMutationQueue;}
+function studioScheduleGoalMutationFlush(delay=0){
+  if(studioGoalMutationRetryTimer){clearTimeout(studioGoalMutationRetryTimer);studioGoalMutationRetryTimer=null;}
+  studioGoalMutationRetryTimer=setTimeout(()=>{studioGoalMutationRetryTimer=null;studioFlushGoalMutations();},delay);
+}
+async function studioFlushGoalMutations(){
+  if(studioGoalMutationInFlight||!studioGoalMutationQueue.length||!currentWorkspaceId||!studioAuthSession?.access_token)return;
+  studioGoalMutationInFlight=true;
+  const job=studioGoalMutationQueue[0];
+  try{
+    const res=await studioWorkspaceCloud('goal_mutate',job.payload);
+    studioGoalMutationQueue.shift();
+    studioPersistGoalQueue();
+    if(studioBaselineData)studioApplyGoalMutationToData(studioBaselineData,job.op,job.projectId,job.memberId,job.goalId,job.changes,job.unset,job.goalPayload);
+    if(res?.updatedAt)studioBaselineUpdatedAt=res.updatedAt;
+    job.attempts=0;
+  }catch(e){
+    job.attempts=(job.attempts||0)+1;
+    studioPersistGoalQueue();
+    console.warn('任务后台同步失败，将自动重试',e);
+    if(job.attempts===1)showToast('网络较慢，修改已保存在本地，将自动同步');
+  }finally{
+    studioGoalMutationInFlight=false;
+    if(studioGoalMutationQueue.length){
+      const wait=(studioGoalMutationQueue[0].attempts||0)>0?Math.min(5000,900*(studioGoalMutationQueue[0].attempts||1)):20;
+      studioScheduleGoalMutationFlush(wait);
+    }
+  }
+}
+function studioGoalMutate(op,projectId,memberId,goalId,changes={},unset=[],goalPayload=null){
+  const data=goalPayload?studioClone(goalPayload):studioClone(changes||{});
+  const item={entity:'task',op:op==='delete'?'delete':'upsert',projectId,memberId,taskId:goalId,data,unset:[...(unset||[])]};
+  const m=state?.projects?.find(p=>p.id===projectId)?.members?.find(x=>x.id===memberId);const idx=m?.goals?.findIndex(g=>g.id===goalId);if(idx>=0)item.sortOrder=idx;
+  studioEnqueueStructuredChanges([item]);
+  if(studioBaselineData)studioApplyGoalMutationToData(studioBaselineData,op,projectId,memberId,goalId,changes,unset,goalPayload);
+  if(state&&currentWorkspaceId)writeLocalWorkspace(currentWorkspaceId,state);
+  return Promise.resolve({ok:true,queued:true});
+}
+async function studioRefreshWorkspaceFromCloud({render=true}={}){
+  if(!currentWorkspaceId||!studioAuthSession?.access_token)return null;
+  if(studioStructuredQueue.length||studioStructuredInFlight||studioEditingNow())return null;
+  try{const remote=await studioDataCloud('snapshot',{workspaceId:currentWorkspaceId});if(!remote?.data)return null;state=remote.data;studioSetBaseline(remote.data,null);writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();if(render){renderPage();syncAnnounceWidget(true);}return remote;}catch(e){console.warn('后台刷新工作区失败',e);return null;}
+}
 async function loadAccountRegistry(){return {};}
 async function saveAccountRegistry(){return true;}
 async function readLegacyData(){return null;}
 async function migrateLegacyWorkspaceForId(){return null;}
 async function resolveWorkspaceForId(){return currentWorkspaceId;}
-async function loadWorkspaceData(workspaceId){if(!workspaceId)return null;try{const cloud=await studioWorkspaceCloud('load',{workspaceId});if(cloud?.data){studioSetBaseline(cloud.data,cloud.updatedAt);writeLocalWorkspace(workspaceId,cloud.data);return cloud.data;}}catch(e){console.warn('云端读取失败，使用本地缓存',e);}const local=readLocalWorkspace(workspaceId);if(local)studioSetBaseline(local,null);return local;}
-async function saveWorkspaceData(workspaceId,data){if(!workspaceId||!data)return false;return studioQueueWorkspaceSave(workspaceId,data);}
+async function loadWorkspaceData(workspaceId){if(!workspaceId)return null;try{const cloud=await studioDataCloud('snapshot',{workspaceId});if(cloud?.data){studioSetBaseline(cloud.data,null);writeLocalWorkspace(workspaceId,cloud.data);return cloud.data;}}catch(e){console.warn('云端读取失败，使用本地缓存',e);}const local=await studioReadWorkspaceCache(workspaceId);if(local)studioSetBaseline(local,null);return local;}
+async function saveWorkspaceData(workspaceId,data){if(!workspaceId||!data)return false;return studioSaveStructuredState(workspaceId,data);}
 async function inviteMemberToWorkspace(id,isAdmin,person,projectIds){return await studioCloud('invite_member',{loginId:normalizeAccountId(id),isAdmin:!!isAdmin,person,projectIds:[...projectIds]});}
 async function createMemberAccount(id,password,isAdmin,person,projectIds){return await inviteMemberToWorkspace(id,isAdmin,person,projectIds||[]);}
 async function attachAccountIdToWorkspace(id,workspaceId,password,isAdmin,person,projectIds){return await inviteMemberToWorkspace(id,isAdmin,person,projectIds||[]);}
@@ -6272,34 +6432,50 @@ async function detachAccountIdToBlankWorkspace(id){return await studioCloud('del
 async function renameAccountIdInRegistry(oldId,newId){return await studioCloud('rename_member_account',{oldLoginId:normalizeAccountId(oldId),newLoginId:normalizeAccountId(newId)});}
 async function loadData(){return currentWorkspaceId?await loadWorkspaceData(currentWorkspaceId):null;}
 async function saveData(){if(!state||!currentWorkspaceId)return false;const ok=await saveWorkspaceData(currentWorkspaceId,state);if(!ok){showToast('本地保存失败，请检查浏览器存储空间');return false;}return true;}
-let studioLiveSyncTimer=null,studioLiveSyncBusy=false;
-function stopWorkspaceLiveSync(){if(studioLiveSyncTimer){clearInterval(studioLiveSyncTimer);studioLiveSyncTimer=null;}}
-function studioEditingNow(){const ae=document.activeElement;const tag=(ae?.tagName||'').toLowerCase();return tag==='input'||tag==='textarea'||tag==='select'||ae?.isContentEditable;}
-async function studioPullRemoteIfChanged(){
-  if(studioLiveSyncBusy||!currentWorkspaceId||!studioAuthSession?.access_token||studioPendingSave||studioSaveInFlight||studioEditingNow())return;
-  studioLiveSyncBusy=true;
-  try{
-    const head=await studioWorkspaceCloud('head',{workspaceId:currentWorkspaceId});
-    if(!head?.updatedAt||head.updatedAt===studioBaselineUpdatedAt)return;
-    const remote=await studioWorkspaceCloud('load',{workspaceId:currentWorkspaceId});
-    if(!remote?.data)return;
-    const previousBaseline=studioBaselineData?studioClone(studioBaselineData):studioClone(state||{});
-    const localCurrent=studioClone(state||{});
-    const localDirty=!studioSame(previousBaseline,localCurrent);
-    state=localDirty?studioMergeThreeWay(remote.data,previousBaseline,localCurrent):remote.data;
-    studioSetBaseline(remote.data,remote.updatedAt);
-    writeLocalWorkspace(currentWorkspaceId,state);
-    ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();
-    if(document.getElementById('pageRoot')){renderPage();syncAnnounceWidget(false);}
-    refreshOpenPersonDetailReadonly();
-  }catch(e){console.warn('多人同步检查失败',e);}
-  finally{studioLiveSyncBusy=false;}
+let studioRealtimeLibPromise=null,studioRealtimeReady=false;
+function studioEnsureRealtimeLibrary(){
+  if(window.supabase?.createClient)return Promise.resolve(window.supabase);
+  if(studioRealtimeLibPromise)return studioRealtimeLibPromise;
+  studioRealtimeLibPromise=new Promise((resolve,reject)=>{const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js';sc.async=true;sc.onload=()=>resolve(window.supabase);sc.onerror=()=>reject(new Error('Realtime library load failed'));document.head.appendChild(sc);});
+  return studioRealtimeLibPromise;
 }
-function startWorkspaceLiveSync(){stopWorkspaceLiveSync();studioLiveSyncTimer=setInterval(studioPullRemoteIfChanged,2200);}
-
+let studioLiveSyncTimer=null,studioLiveSyncBusy=false,studioRealtimeClient=null,studioRealtimeChannel=null,studioRealtimeRefreshTimer=null;
+function stopWorkspaceLiveSync(){
+  if(studioLiveSyncTimer){clearInterval(studioLiveSyncTimer);studioLiveSyncTimer=null;}
+  if(studioRealtimeChannel&&studioRealtimeClient){try{studioRealtimeClient.removeChannel(studioRealtimeChannel);}catch(e){}}
+  studioRealtimeChannel=null;studioRealtimeClient=null;studioRealtimeReady=false;
+}
+function studioEditingNow(){const ae=document.activeElement;const tag=(ae?.tagName||'').toLowerCase();return tag==='input'||tag==='textarea'||tag==='select'||ae?.isContentEditable;}
+function studioScheduleRemoteRefresh(delay=120){
+  clearTimeout(studioRealtimeRefreshTimer);studioRealtimeRefreshTimer=setTimeout(async()=>{
+    if(studioStructuredQueue.length||studioStructuredInFlight||studioEditingNow()){studioScheduleRemoteRefresh(350);return;}
+    await studioRefreshWorkspaceFromCloud({render:true});
+  },delay);
+}
+async function studioPullRemoteIfChanged(){return studioScheduleRemoteRefresh(0);}
+async function startWorkspaceLiveSync(){
+  stopWorkspaceLiveSync();
+  if(!currentWorkspaceId||!studioAuthSession?.access_token)return;
+  try{
+    await studioEnsureRealtimeLibrary();
+    if(window.supabase?.createClient){
+      studioRealtimeClient=window.supabase.createClient(STUDIO_SUPABASE_URL,STUDIO_SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:false,autoRefreshToken:false},accessToken:async()=>studioAuthSession?.access_token||null,global:{headers:{Authorization:`Bearer ${studioAuthSession.access_token}`}}});
+      const tables=['studio_workspace_settings_v5','studio_personnel_v5','studio_projects_v5','studio_project_members_v5','studio_tasks_v5','studio_tool_categories_v5','studio_tools_v5','studio_strategic_goals_v5','studio_strategic_archives_v5','studio_notifications_v5','studio_collaborations_v5'];
+      studioRealtimeChannel=studioRealtimeClient.channel(`studio-v5-${currentWorkspaceId}`);
+      tables.forEach(table=>studioRealtimeChannel.on('postgres_changes',{event:'*',schema:'public',table,filter:`workspace_id=eq.${currentWorkspaceId}`},payload=>{const row=payload.new||payload.old||{};if(row.updated_by_client&&row.updated_by_client===studioClientId)return;studioScheduleRemoteRefresh(90);}));
+      studioRealtimeChannel.subscribe(status=>{studioRealtimeReady=status==='SUBSCRIBED';if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')console.warn('Realtime 连接异常，将使用低频兜底同步');});
+    }
+  }catch(e){console.warn('Realtime 初始化失败，将使用低频兜底同步',e);}
+  studioLiveSyncTimer=setInterval(()=>{if(!studioRealtimeReady&&!document.hidden&&!studioEditingNow()&&!studioStructuredQueue.length)studioScheduleRemoteRefresh(0);},30000);
+  if(!window.__studioVisibilitySyncBound){window.__studioVisibilitySyncBound=true;document.addEventListener('visibilitychange',()=>{if(!document.hidden)studioScheduleRemoteRefresh(0);});}
+}
+if(!window.__studioPagehideQueueBound){
+  window.__studioPagehideQueueBound=true;
+  window.addEventListener('pagehide',()=>{try{studioPersistStructuredQueue();if(state&&currentWorkspaceId)writeLocalWorkspace(currentWorkspaceId,state);studioFlushStructuredQueue();}catch(e){}});
+}
 async function loadIdentity(){try{let v=sessionStorage.getItem(IDENTITY_LOCAL_KEY);if(!v){v=localStorage.getItem(IDENTITY_LOCAL_KEY)||'';if(v){sessionStorage.setItem(IDENTITY_LOCAL_KEY,v);localStorage.removeItem(IDENTITY_LOCAL_KEY);}}return v||null;}catch(e){return null;}}
 async function saveIdentity(id){identity=normalizeAccountId(id)||null;try{if(identity)sessionStorage.setItem(IDENTITY_LOCAL_KEY,identity);else sessionStorage.removeItem(IDENTITY_LOCAL_KEY);localStorage.removeItem(IDENTITY_LOCAL_KEY);}catch(e){}return true;}
-async function loadReadIds(){if(!identity)return [];const key=`read-notifications:${normalizeAccountId(identity)}`;try{const res=await studioCloud('get_user_state',{key:'read-notifications'});if(Array.isArray(res?.value)){localStorage.setItem(key,JSON.stringify(res.value));return res.value;}}catch(e){console.warn('读取通知状态失败',e);}try{const local=localStorage.getItem(key);return local?JSON.parse(local):[];}catch(e){return [];}}
+async function loadReadIds(){if(!identity)return [];const key=`read-notifications:${normalizeAccountId(identity)}`;let local=[];try{const raw=localStorage.getItem(key);local=raw?JSON.parse(raw):[];}catch(e){local=[];}studioCloud('get_user_state',{key:'read-notifications'}).then(res=>{if(Array.isArray(res?.value)){readIds=res.value;try{localStorage.setItem(key,JSON.stringify(res.value));}catch(_e){}syncAnnounceWidget(true);}}).catch(e=>console.warn('读取通知状态失败',e));return Array.isArray(local)?local:[];}
 async function saveReadIds(){if(!identity)return;const key=`read-notifications:${normalizeAccountId(identity)}`;try{localStorage.setItem(key,JSON.stringify(readIds));}catch(e){}studioCloud('set_user_state',{key:'read-notifications',value:readIds}).catch(e=>console.warn('保存通知状态失败',e));}
 
 function getPersonnel(id){ const target=normalizeAccountId(id); return state.personnel.find(p=>normalizeAccountId(p.id)===target); }
@@ -7048,10 +7224,14 @@ async function init(){
   const sessionInfo=await studioRestoreSession();
   if(!sessionInfo){identity=null;currentWorkspaceId=null;state=null;readIds=[];document.getElementById('app').innerHTML='';openAccountLoginModal({force:true});return;}
   currentWorkspaceId=sessionInfo.workspaceId;
-  state=await loadWorkspaceData(currentWorkspaceId) || sessionInfo.data;
+  await studioLoadStructuredQueue(currentWorkspaceId);
+  state=sessionInfo.data || await studioReadWorkspaceCache(currentWorkspaceId);
+  if(sessionInfo.updatedAt&&state)studioSetBaseline(state,sessionInfo.updatedAt);else if(state&&!studioBaselineData)studioSetBaseline(state,null);
   await saveIdentity(sessionInfo.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);
   ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();
-  readIds=await loadReadIds();renderApp();if(currentPage==='notify')await markTeamAnnouncementsRead();startCarousel();startStrategicArchiveTimer();syncAnnounceWidget(true);startWorkspaceLiveSync();
+  readIds=await loadReadIds();renderApp();if(currentPage==='notify')markTeamAnnouncementsRead();startCarousel();startStrategicArchiveTimer();syncAnnounceWidget(true);startWorkspaceLiveSync();
+  if(studioStructuredQueue.length)studioScheduleStructuredFlush(0);
+  if(sessionInfo.fromCache&&!studioStructuredQueue.length)setTimeout(()=>studioRefreshWorkspaceFromCloud({render:true}),0);
   if(sessionInfo.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);
 }
 
@@ -7248,7 +7428,7 @@ function openAccountLoginModal({force=false, switchMode=false}={}){
   const setMode=(mode)=>{const isLogin=mode==='login';loginTab.classList.toggle('active',isLogin);registerTab.classList.toggle('active',!isLogin);loginPanel.hidden=!isLogin;registerPanel.hidden=isLogin;setTimeout(()=>document.getElementById(isLogin?'accountLoginId':'accountRegisterId')?.focus(),0);};
   loginTab.onclick=()=>setMode('login');registerTab.onclick=()=>setMode('register');
   document.querySelectorAll('#accountLoginMask [data-password-toggle]').forEach(btn=>{btn.onclick=()=>{const input=document.getElementById(btn.dataset.passwordToggle);if(!input)return;input.type=input.type==='password'?'text':'password';btn.textContent=input.type==='password'?'显示':'隐藏';};});
-  const enterWorkspace=async(info)=>{currentWorkspaceId=info.workspaceId;state=await loadWorkspaceData(currentWorkspaceId)||info.data;await saveIdentity(info.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();readIds=await loadReadIds();root.innerHTML='';currentPage='dashboard';selectedProjectId=null;projectWorkspaceMode='projects';renderApp();syncAnnounceWidget(true);startWorkspaceLiveSync();if(info.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);};
+  const enterWorkspace=async(info)=>{currentWorkspaceId=info.workspaceId;await studioLoadStructuredQueue(currentWorkspaceId);state=info.data||await studioReadWorkspaceCache(currentWorkspaceId);if(info.updatedAt&&state)studioSetBaseline(state,info.updatedAt);else if(state&&!studioBaselineData)studioSetBaseline(state,null);await saveIdentity(info.loginId);if(state)writeLocalWorkspace(currentWorkspaceId,state);ensureToolData();ensureApplicationsData();ensurePersonnelData();ensureStrategicGoalsData();ensureStrategicArchiveData();await autoArchiveDueStrategicGoals();readIds=await loadReadIds();root.innerHTML='';currentPage='dashboard';selectedProjectId=null;projectWorkspaceMode='projects';renderApp();syncAnnounceWidget(true);startWorkspaceLiveSync();if(studioStructuredQueue.length)studioScheduleStructuredFlush(0);if(info.fromCache)setTimeout(()=>studioRefreshWorkspaceFromCloud({render:true}),0);if(info.mustChangePassword)setTimeout(()=>openProfilePasswordModal({force:true}),80);};
   const loginSubmit=async()=>{const input=document.getElementById('accountLoginId'),password=document.getElementById('accountLoginPassword'),error=document.getElementById('accountLoginError'),btn=document.getElementById('confirmAccountLogin');const id=(input?.value||'').trim(),pwd=password?.value||'';if(!id){if(error)error.textContent='请输入 ID';input?.focus();return;}if(!pwd){if(error)error.textContent='请输入密码';password?.focus();return;}if(error)error.textContent='';if(btn){btn.disabled=true;btn.textContent='登录中…';}try{if(state&&currentWorkspaceId){await saveData();await studioFlushBeforeSwitch();}const info=await studioLoginByIdPassword(id,pwd);await enterWorkspace(info);}catch(e){if(error)error.textContent=e?.message||'登录失败';if(btn){btn.disabled=false;btn.textContent='登录';}}};
   const registerSubmit=async()=>{const idInput=document.getElementById('accountRegisterId'),pwdInput=document.getElementById('accountRegisterPassword'),pwd2Input=document.getElementById('accountRegisterPasswordConfirm'),error=document.getElementById('accountRegisterError'),btn=document.getElementById('confirmAccountRegister');const id=(idInput?.value||'').trim(),pwd=pwdInput?.value||'',pwd2=pwd2Input?.value||'';if(!id){if(error)error.textContent='请设置 ID';idInput?.focus();return;}if(pwd.length<6){if(error)error.textContent='密码至少 6 位';pwdInput?.focus();return;}if(pwd!==pwd2){if(error)error.textContent='两次输入的密码不一致';pwd2Input?.focus();return;}if(error)error.textContent='';if(btn){btn.disabled=true;btn.textContent='注册中…';}try{if(state&&currentWorkspaceId){await saveData();await studioFlushBeforeSwitch();}const info=await studioRegisterByIdPassword(id,pwd);await enterWorkspace(info);setTimeout(()=>showToast(info.joinedTeam?'注册成功，已自动加入团队':'注册成功，已创建个人账号'),80);}catch(e){if(error)error.textContent=e?.message||'注册失败';if(btn){btn.disabled=false;btn.textContent='注册';}}};
   document.getElementById('confirmAccountLogin').onclick=loginSubmit;document.getElementById('confirmAccountRegister').onclick=registerSubmit;
@@ -7969,9 +8149,8 @@ function openGoalDatesModal(pid, mid, gid){
       const deadline = document.getElementById('editGoalDeadline').value;
       if(!startDate || !deadline){ showToast('请选择开始日期和截止日期'); return; }
       if(startDate > deadline){ showToast('开始日期不能晚于截止日期'); return; }
-      goal.startDate = startDate;
-      goal.deadline = deadline;
-      await saveData();
+      const oldStart=goal.startDate,oldDeadline=goal.deadline;goal.startDate=startDate;goal.deadline=deadline;writeLocalWorkspace(currentWorkspaceId,state);
+      try{await studioGoalMutate('update',pid,mid,gid,{startDate,deadline});}catch(e){goal.startDate=oldStart;goal.deadline=oldDeadline;writeLocalWorkspace(currentWorkspaceId,state);showToast(e?.message||'保存失败，请重试');return;}
       closeModal();
       renderPage();
       showToast('目标日期已更新');
@@ -8057,7 +8236,9 @@ function openDoneGoalsModal(pid, mid){
         goal.status = el.value;
         if(goal.status === '已完成' && !wasCompleted) goal.completedAt = Date.now();
         if(goal.status !== '已完成') delete goal.completedAt;
-        await saveData();
+        writeLocalWorkspace(currentWorkspaceId,state);
+        const doneChanges={status:goal.status};const doneUnset=[];if(goal.completedAt)doneChanges.completedAt=goal.completedAt;else doneUnset.push('completedAt');
+        try{await studioGoalMutate('update',pId,mId,gId,doneChanges,doneUnset);}catch(e){showToast(e?.message||'保存失败，请重试');return;}
         renderPage();
         closeModal();
         if(goal.status==='已完成') openDoneGoalsModal(pId,mId);
@@ -8071,8 +8252,8 @@ function openDoneGoalsModal(pid, mid){
           const p = state.projects.find(p=>p.id===pId);
           const member = p && p.members.find(mm=>mm.id===mId);
           if(!member) return;
-          member.goals = member.goals.filter(g=>g.id!==gId);
-          await saveData();
+          const removedGoal=member.goals.find(g=>g.id===gId);member.goals=member.goals.filter(g=>g.id!==gId);writeLocalWorkspace(currentWorkspaceId,state);
+          try{await studioGoalMutate('delete',pId,mId,gId);}catch(e){if(removedGoal)member.goals.push(removedGoal);writeLocalWorkspace(currentWorkspaceId,state);showToast(e?.message||'删除失败，请重试');return;}
           renderPage();
           closeModal();
           const remaining = member.goals.some(g=>g.status==='已完成');
@@ -9866,11 +10047,12 @@ function bindPageEvents(){
         progress:0,
         priority:'一般'
       };
+      newGoal.__draft = true;
       m.goals.push(newGoal);
-      await saveData();
+      writeLocalWorkspace(currentWorkspaceId,state);
       renderPage();
 
-      // 直接生成正式目标卡片，并立即进入名称编辑；其余字段均使用默认值，可在卡片上直接调整。
+      // 先在本地进入名称编辑，确认名称后只提交这一条任务，避免“新目标”占位与正式名称连续两次整包保存。
       setTimeout(()=>{
         const nameEl = document.querySelector(`[data-goal-rename="${pid}|${mid}|${newGoal.id}"]`);
         if(nameEl){
@@ -9928,7 +10110,8 @@ function bindPageEvents(){
           delete g.completedAt;
           el.value = String(restoreP);
           updateVisual();
-          await saveData();
+          writeLocalWorkspace(currentWorkspaceId,state);
+          try{await studioGoalMutate('update',pid,mid,gid,{progress:g.progress,status:g.status},['completedAt']);}catch(e){showToast(e?.message||'保存失败，请重试');return;}
           closeModal();
         };
 
@@ -9937,7 +10120,8 @@ function bindPageEvents(){
           g.progress = 100;
           g.status = '已完成';
           g.completedAt = Date.now();
-          await saveData();
+          writeLocalWorkspace(currentWorkspaceId,state);
+          try{await studioGoalMutate('update',pid,mid,gid,{progress:100,status:'已完成',completedAt:g.completedAt});}catch(e){showToast(e?.message||'保存失败，请重试');return;}
           closeModal();
           renderPage();
           showToast('目标已完成，已归入已完成目标');
@@ -9952,7 +10136,8 @@ function bindPageEvents(){
       g.status = statusFromProgress(p);
       delete g.completedAt;
       el.dataset.lastBeforeComplete = String(p);
-      await saveData();
+      writeLocalWorkspace(currentWorkspaceId,state);
+      try{await studioGoalMutate('update',pid,mid,gid,{progress:p,status:g.status},['completedAt']);}catch(e){showToast(e?.message||'保存失败，请重试');}
     };
   });
   root.querySelectorAll('[data-goal-rename]').forEach(el=>{
@@ -9979,6 +10164,7 @@ function bindPageEvents(){
         if(finished) return;
         if(!save){
           finished = true;
+          if(goal.__draft){member.goals=member.goals.filter(g=>g.id!==goal.id);writeLocalWorkspace(currentWorkspaceId,state);}
           renderPage();
           return;
         }
@@ -9988,20 +10174,34 @@ function bindPageEvents(){
           setTimeout(()=>{ input.focus(); input.select(); }, 0);
           return;
         }
-        finished = true;
-        if(nextContent !== goal.content){
-          goal.content = nextContent;
-          await saveData();
-          showToast('目标名称已更新');
-        }
+        const wasDraft=!!goal.__draft;
+        const oldContent=goal.content;
+        goal.content=nextContent;
+        delete goal.__draft;
+        writeLocalWorkspace(currentWorkspaceId,state);
+        finished=true;
         renderPage();
+        if(wasDraft){studioGoalMutate('create',pid,mid,gid,{},[],goal);showToast('任务已新增');}
+        else if(nextContent!==oldContent){studioGoalMutate('update',pid,mid,gid,{content:nextContent});showToast('目标名称已更新');}
       };
 
       input.onclick = (ev)=>ev.stopPropagation();
       input.ondblclick = (ev)=>ev.stopPropagation();
+      // 任务名称：点击框外保存；非输入法合成状态下按 Enter 也保存。
+      // 中文输入法候选确认期间的 Enter 不触发保存。
+      let goalNameComposing = false;
+      input.oncompositionstart = ()=>{ goalNameComposing = true; };
+      input.oncompositionend = ()=>{ goalNameComposing = false; };
       input.onkeydown = (ev)=>{
-        if(ev.key === 'Enter'){ ev.preventDefault(); finishRename(true); }
-        else if(ev.key === 'Escape'){ ev.preventDefault(); finishRename(false); }
+        if(ev.key === 'Escape' && !goalNameComposing && !ev.isComposing){
+          ev.preventDefault();
+          finishRename(false);
+          return;
+        }
+        if(ev.key === 'Enter' && !goalNameComposing && !ev.isComposing && ev.keyCode !== 229){
+          ev.preventDefault();
+          input.blur();
+        }
       };
       input.onblur = ()=>finishRename(true);
     };
@@ -10022,8 +10222,8 @@ function bindPageEvents(){
       const m = proj && proj.members.find(m=>m.id===mid);
       const g = m && m.goals.find(g=>g.id===gid);
       if(!g) return;
-      g.priority = el.value;
-      await saveData();
+      const oldPriority=g.priority;g.priority=el.value;writeLocalWorkspace(currentWorkspaceId,state);
+      try{await studioGoalMutate('update',pid,mid,gid,{priority:g.priority});}catch(e){g.priority=oldPriority;writeLocalWorkspace(currentWorkspaceId,state);showToast(e?.message||'保存失败，请重试');return;}
       renderPage();
       showToast('优先级已更新');
     };
@@ -10044,7 +10244,8 @@ function bindPageEvents(){
         delete g.strategicGoalId;
         delete g.strategicLinkedAt;
       }
-      await saveData();
+      const changes=nextId?{strategicGoalId:nextId,strategicLinkedAt:g.strategicLinkedAt}:{};const unset=nextId?[]:['strategicGoalId','strategicLinkedAt'];
+      try{await studioGoalMutate('update',pid,mid,gid,changes,unset);}catch(e){showToast(e?.message||'保存失败，请重试');return;}
       renderPage();
       showToast(nextId ? `已关联「${strategicGoalName(nextId)}」` : '已取消战略目标关联');
     };
@@ -10060,7 +10261,8 @@ function bindPageEvents(){
       g.status = el.value;
       if(g.status === '已完成' && !wasCompleted) g.completedAt = Date.now();
       if(g.status !== '已完成') delete g.completedAt;
-      await saveData();
+      const statusChanges={status:g.status};const statusUnset=[];if(g.completedAt)statusChanges.completedAt=g.completedAt;else statusUnset.push('completedAt');
+      try{await studioGoalMutate('update',pid,mid,gid,statusChanges,statusUnset);}catch(e){showToast(e?.message||'保存失败，请重试');return;}
       renderPage();
       showToast(g.status==='已完成' ? '目标已完成，已归入已完成目标' : '进度已更新');
     };
@@ -10070,9 +10272,9 @@ function bindPageEvents(){
       const [pid, mid, gid] = el.dataset.delGoal.split('|');
       const proj = state.projects.find(p=>p.id===pid);
       const m = proj.members.find(m=>m.id===mid);
-      m.goals = m.goals.filter(g=>g.id!==gid);
-      await saveData();
+      const removed=m.goals.find(g=>g.id===gid);m.goals=m.goals.filter(g=>g.id!==gid);writeLocalWorkspace(currentWorkspaceId,state);
       renderPage();
+      studioGoalMutate('delete',pid,mid,gid).catch(e=>{if(removed)m.goals.push(removed);writeLocalWorkspace(currentWorkspaceId,state);renderPage();showToast(e?.message||'删除失败，请重试');});
     };
   });
   root.querySelectorAll('[data-toggle-donegoals]').forEach(el=>{
@@ -10455,7 +10657,7 @@ function bindPageEvents(){
       const content = notifyInput.value.trim();
       if(!content){ showToast('请输入公告内容'); return; }
       const author = identity ? getPersonnel(identity) : null;
-      state.notifications.push({id:'n_'+uid(), content, type:'manual', ts:Date.now(), readBy: identity ? [identity] : [], authorId: identity || null, authorName: author?.name || (identity ? String(identity) : '未知用户'), authorAvatar: author?.avatar || ''});
+      state.notifications.push({id:'n_'+uid(), content, type:'manual', ts:Date.now(), readBy: identity ? [identity] : [], authorId: identity || null, authorName: author?.name || (identity ? String(identity) : '未知用户')});
       await saveData();
       notifyInput.value = '';
       renderPage();
